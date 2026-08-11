@@ -1,0 +1,33 @@
+{
+  "name": "qldpc-bicycle-v0.2",
+  "problem": "Explore small circulant bicycle CSS codes while preserving diverse construction behaviors.",
+  "domain": "qldpc",
+  "mode": "metric_search",
+  "objectives": [
+    {"name": "distance", "direction": "maximize", "weight": 1.0},
+    {"name": "rate", "direction": "maximize", "weight": 1.0},
+    {"name": "row_weight_x", "direction": "minimize", "weight": 0.25}
+  ],
+  "constraints": [
+    {"name": "css_commutation", "description": "Hx Hz^T = 0 over GF(2)", "hard": true}
+  ],
+  "behavior_dimensions": ["representation", "size", "density_bucket"],
+  "budget": {
+    "generations": 4,
+    "population_size": 8,
+    "evaluator_timeout_seconds": 20,
+    "seed": 7
+  },
+  "search": {
+    "novelty_probability": 0.3,
+    "novelty_k": 5,
+    "migration_interval": 2,
+    "migrants_per_island": 1,
+    "checkpoint_interval": 1
+  },
+  "metadata": {
+    "benchmark": true,
+    "distance_method": "exact small-code weight enumeration",
+    "warning": "This benchmark is for ResearchEvolve integration testing, not large-scale qLDPC discovery."
+  }
+}
