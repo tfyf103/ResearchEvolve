@@ -95,6 +95,11 @@ class ProofPipeline:
         self.problem = str(spec.get("problem", ""))
         self.constraints = [dict(item) for item in spec.get("constraints", []) if isinstance(item, dict)]
         self.domain = str(spec.get("domain", "generic"))
+        conjecture_policy = spec.get("conjecture", {})
+        if not isinstance(conjecture_policy, dict):
+            conjecture_policy = {}
+        self.conjecture_min_evidence = max(1, int(conjecture_policy.get("min_evidence", 1)))
+
         metadata = spec.get("metadata", {})
         if metadata is None:
             metadata = {}
@@ -124,6 +129,8 @@ class ProofPipeline:
     def _build_proof_manifest(self) -> dict[str, Any]:
         stable = {
             "source_run_fingerprint": self.source_manifest.get("fingerprint"),
+            "source_generation": self.source_generation,
+            "source_conjecture_min_evidence": self.conjecture_min_evidence,
             "planner": self.planner.name,
             "prover": self.prover.name,
             "verifier": self.verifier.name,
@@ -150,7 +157,7 @@ class ProofPipeline:
             existing = json.loads(path.read_text(encoding="utf-8"))
             if existing.get("fingerprint") != self.proof_manifest_fingerprint:
                 raise ValueError(
-                    "proof_manifest.json was created with different planner/prover/verifier or proof policy; "
+                    "proof_manifest.json was created with different source generation, actors, or proof policy; "
                     "use a fresh research workspace or keep the same proof configuration"
                 )
             return
@@ -278,7 +285,7 @@ class ProofPipeline:
             "proof_preflight",
         )
         self.conjectures.record_counterexample(counterexample)
-        self.conjectures.refresh_status(conjecture.id, min_evidence=1)
+        self.conjectures.refresh_status(conjecture.id, min_evidence=self.conjecture_min_evidence)
         invalidated = self.memory.invalidate_conjecture_proofs(
             conjecture.id,
             f"Existing evaluated candidate {candidate.id} refuted the conjecture during proof preflight.",
@@ -330,7 +337,7 @@ class ProofPipeline:
                     True,
                     "proof_preflight",
                 )
-        self.conjectures.refresh_status(conjecture.id, min_evidence=1)
+        self.conjectures.refresh_status(conjecture.id, min_evidence=self.conjecture_min_evidence)
         return None
 
     def _build_context(
@@ -574,11 +581,19 @@ class ProofPipeline:
 
     def run(self) -> ProofRunSummary:
         candidates = self._valid_candidates()
-        records = [
-            record
-            for record in self.conjectures.recent_conjectures(100000)
-            if record["status"] == "empirically_supported"
-        ][: self.max_conjectures]
+        all_records = self.conjectures.recent_conjectures(100000)
+        for record in all_records:
+            if record.get("status") not in {"refuted", "invalid"}:
+                continue
+            conjecture_id = str(record["id"])
+            invalidated = self.memory.invalidate_conjecture_proofs(
+                conjecture_id,
+                f"Source conjecture status is {record.get('status')}; prior proof lineage is no longer current.",
+            )
+            if invalidated:
+                self._sync_invalidated_proof_graph(conjecture_id)
+
+        records = [record for record in all_records if record["status"] == "empirically_supported"][: self.max_conjectures]
 
         considered = 0
         attempted = 0
