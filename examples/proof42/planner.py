@@ -8,13 +8,14 @@ import sys
 
 def main() -> int:
     request = json.load(sys.stdin)
-    statement = str(request.get("proof_spec", {}).get("statement", ""))
+    proof_spec = request.get("proof_spec", {})
+    statement = str(proof_spec.get("statement", ""))
     plan = {
-        "strategy": "Unfold the absolute-distance definition, prove absolute values are non-negative, then conclude the target.",
+        "strategy": "Use the frozen ProofSpec distance definition, prove absolute values are non-negative, then conclude the exact target.",
         "lemmas": [
             {
                 "label": "definition",
-                "statement": "The evaluator metric distance_to_42 is the absolute value |x-42|.",
+                "statement": "By a frozen ProofSpec assumption, distance_to_42 is abs(x-42) for every evaluated numeric x.",
                 "depends_on": [],
                 "role": "supporting"
             },
