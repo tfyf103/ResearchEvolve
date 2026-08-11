@@ -56,9 +56,9 @@ jobs:
       - name: v0.5 proof planner prover verifier smoke test
         run: |
           research-evolve run \
-            --spec examples/conjecture42/spec.json \
+            --spec examples/proof42/spec.json \
             --evaluator examples/target42/evaluator.py \
-            --seeds examples/conjecture42/seeds.json \
+            --seeds examples/proof42/seeds.json \
             --conjecturer-command "python examples/conjecture42/conjecturer.py" \
             --workspace .researchevolve/ci-proof42 \
             --islands 2
