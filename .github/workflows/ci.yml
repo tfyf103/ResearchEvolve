@@ -17,7 +17,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - name: Install
+      - name: Install Python package
         run: python -m pip install -e ".[dev]"
       - name: Test
         run: pytest -q
@@ -75,3 +75,47 @@ jobs:
           research-evolve proof-artifacts --workspace .researchevolve/ci-proof42 --limit 3
           research-evolve proof-reviews --workspace .researchevolve/ci-proof42 --limit 3
           research-evolve proof-manifest --workspace .researchevolve/ci-proof42
+      - name: Install pinned Lean 4 toolchain
+        run: |
+          curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          "$HOME/.elan/bin/elan" toolchain install leanprover/lean4:v4.30.0
+          "$HOME/.elan/bin/lean" --version
+      - name: v0.6 Lean kernel and repair smoke test
+        run: |
+          research-evolve run \
+            --spec examples/formal42/spec.json \
+            --evaluator examples/target42/evaluator.py \
+            --seeds examples/formal42/seeds.json \
+            --conjecturer-command "python examples/conjecture42/conjecturer.py" \
+            --workspace .researchevolve/ci-formal42 \
+            --islands 2
+          research-evolve prove \
+            --workspace .researchevolve/ci-formal42 \
+            --planner-command "python examples/proof42/planner.py" \
+            --prover-command "python examples/proof42/prover.py" \
+            --verifier-command "python examples/proof42/verifier.py" \
+            --max-conjectures 4 \
+            --max-lemmas 12 \
+            --min-verifier-confidence 0.7
+          research-evolve formalize \
+            --workspace .researchevolve/ci-formal42 \
+            --formalizer-command "python examples/formal42/formalizer.py" \
+            --repairer-command "python examples/formal42/repairer.py" \
+            --lean-command lean \
+            --max-targets 4 \
+            --max-repairs 2
+          research-evolve formal-specs --workspace .researchevolve/ci-formal42 --limit 3
+          research-evolve formal-artifacts --workspace .researchevolve/ci-formal42 --limit 3
+          research-evolve kernel-runs --workspace .researchevolve/ci-formal42 --limit 3
+          research-evolve formal-manifest --workspace .researchevolve/ci-formal42
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          workspace = Path('.researchevolve/ci-formal42')
+          summary = json.loads((workspace / 'formal_summary.json').read_text())
+          assert summary['formal_verified'] == 1, summary
+          assert summary['environment_error'] == 0, summary
+          sources = list((workspace / 'formal_sources').glob('*.lean'))
+          assert len(sources) >= 2, sources
+          PY
