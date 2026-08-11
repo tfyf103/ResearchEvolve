@@ -14,13 +14,9 @@ from .formal import FormalArtifact, FormalizationSpec, KernelResult, LeanDiagnos
 class LeanKernel:
     """Thin Lean compiler/kernel gate for v0.6.
 
-    `formal_verified` is emitted only when the frozen target and a model-supplied
-    proof term pass a conservative source gate, the Lean version matches the
-    frozen toolchain, and Lean exits successfully without errors or `sorryAx`.
-
-    v0.6 intentionally rejects untrusted top-level helper source. Formalizers can
-    use local `have`/`show` steps inside the proof term, while imports, definitions,
-    and theorem signatures remain frozen by the ResearchSpec formal contract.
+    `formal_verified` requires a frozen target, conservative source gate, exact
+    toolchain match, successful Lean elaboration/kernel checking, and an audited
+    `#print axioms` result containing only the FormalizationSpec allowlist.
     """
 
     _FORBIDDEN_WORDS = (
@@ -40,6 +36,7 @@ class LeanKernel:
         r"^(?P<file>.*?):(?P<line>\d+):(?P<column>\d+):\s*(?P<severity>error|warning|info):\s*(?P<message>.*)$"
     )
     _VERSION_RE = re.compile(r"Lean\s*\(version\s+(?P<version>\d+\.\d+\.\d+)")
+    _AXIOM_RE = re.compile(r"depends on axioms:\s*\[(?P<axioms>[^\]]*)\]")
 
     def __init__(
         self,
@@ -99,6 +96,18 @@ class LeanKernel:
                 diagnostics.append(LeanDiagnostic(severity="warning", message=raw.strip(), raw=raw))
         return diagnostics
 
+    @classmethod
+    def _parse_axioms(cls, text: str) -> tuple[list[str] | None, str | None]:
+        if "does not depend on any axioms" in text:
+            return [], None
+        match = cls._AXIOM_RE.search(text)
+        if match is None:
+            return None, "axiom-audit-unrecognized"
+        raw = match.group("axioms").strip()
+        if not raw:
+            return [], None
+        return [item.strip() for item in raw.split(",") if item.strip()], None
+
     def _detect_version(self) -> tuple[str | None, str, str, int | None, str | None]:
         try:
             completed = subprocess.run(
@@ -128,6 +137,12 @@ class LeanKernel:
         source: str,
         reason: str,
         message: str,
+        *,
+        detected_version: str | None = None,
+        exit_code: int | None = None,
+        stdout: str = "",
+        stderr: str = "",
+        axioms: list[str] | None = None,
     ) -> tuple[KernelResult, str]:
         digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
         return (
@@ -137,9 +152,12 @@ class LeanKernel:
                 status="kernel_rejected",
                 command=list(self.command),
                 expected_toolchain=spec.toolchain,
-                detected_version=None,
-                exit_code=None,
+                detected_version=detected_version,
+                exit_code=exit_code,
+                stdout=stdout,
+                stderr=stderr,
                 diagnostics=[LeanDiagnostic(severity="error", message=message)],
+                axioms=list(axioms or []),
                 gate_reason=reason,
                 source_sha256=digest,
             ),
@@ -265,19 +283,57 @@ class LeanKernel:
         combined = f"{completed.stdout}\n{completed.stderr}"
         diagnostics = self._parse_diagnostics(combined)
         has_error = any(item.severity == "error" for item in diagnostics)
-        sorry_dependency = "sorryAx" in combined
-        passed = completed.returncode == 0 and not has_error and not sorry_dependency
-        reason = ""
-        if completed.returncode != 0:
-            reason = "lean-exit-nonzero"
-        elif has_error:
-            reason = "lean-reported-error"
-        elif sorry_dependency:
-            reason = "sorry-axiom-dependency"
+        if completed.returncode != 0 or has_error:
+            reason = "lean-exit-nonzero" if completed.returncode != 0 else "lean-reported-error"
+            result = KernelResult(
+                formal_artifact_id=artifact.id,
+                passed=False,
+                status="kernel_rejected",
+                command=list(self.command),
+                expected_toolchain=spec.toolchain,
+                detected_version=detected,
+                exit_code=completed.returncode,
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+                diagnostics=diagnostics,
+                gate_reason=reason,
+                source_sha256=digest,
+            )
+            return result, source
+
+        axioms, axiom_error = self._parse_axioms(combined)
+        if axiom_error is not None or axioms is None:
+            return self._gate_failure(
+                spec,
+                artifact,
+                source,
+                axiom_error or "axiom-audit-unrecognized",
+                "Lean succeeded but ResearchEvolve could not audit #print axioms output",
+                detected_version=detected,
+                exit_code=completed.returncode,
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+            )
+
+        disallowed = [axiom for axiom in axioms if axiom not in spec.allowed_axioms]
+        if disallowed:
+            return self._gate_failure(
+                spec,
+                artifact,
+                source,
+                "disallowed-axioms",
+                f"Lean theorem depends on disallowed axioms: {disallowed}",
+                detected_version=detected,
+                exit_code=completed.returncode,
+                stdout=completed.stdout,
+                stderr=completed.stderr,
+                axioms=axioms,
+            )
+
         result = KernelResult(
             formal_artifact_id=artifact.id,
-            passed=passed,
-            status="formal_verified" if passed else "kernel_rejected",
+            passed=True,
+            status="formal_verified",
             command=list(self.command),
             expected_toolchain=spec.toolchain,
             detected_version=detected,
@@ -285,7 +341,8 @@ class LeanKernel:
             stdout=completed.stdout,
             stderr=completed.stderr,
             diagnostics=diagnostics,
-            gate_reason=reason,
+            axioms=axioms,
+            gate_reason="",
             source_sha256=digest,
         )
         return result, source
