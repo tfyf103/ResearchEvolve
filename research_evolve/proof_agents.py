@@ -71,29 +71,53 @@ class _CommandActor:
         self.command = parsed
         self.timeout_seconds = float(timeout_seconds)
         self.role = role
-        self._implementation_fingerprint = self._build_implementation_fingerprint()
-        self._identity = f"command:{Path(self.command[0]).name}:{self._implementation_fingerprint}"
+        self._files = self._referenced_files()
+        self._config_fingerprint = self._build_config_fingerprint()
+        self._independence_fingerprint = self._build_independence_fingerprint()
+        self._identity = f"command:{self.role}:{Path(self.command[0]).name}:{self._config_fingerprint}"
 
-    def _build_implementation_fingerprint(self) -> str:
+    def _referenced_files(self) -> list[dict[str, str]]:
         files: list[dict[str, str]] = []
         for argument in self.command[1:]:
             path = Path(argument)
             if path.is_file():
                 files.append({"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
-        identity_input = {"argv": self.command, "files": files}
+        return files
+
+    def _build_config_fingerprint(self) -> str:
+        identity_input = {"argv": self.command, "files": self._files}
+        return hashlib.sha256(
+            json.dumps(identity_input, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:16]
+
+    def _build_independence_fingerprint(self) -> str:
+        # If a wrapper script/file is visible, independence is based on that
+        # implementation rather than on role/prompt flags. This prevents the same
+        # script with `--role prover` and `--role verifier` from self-verifying.
+        if self._files:
+            identity_input: dict[str, Any] = {
+                "executable": Path(self.command[0]).name,
+                "files": self._files,
+            }
+        else:
+            # For commands such as `python -m package`, no direct file is visible;
+            # fall back to the complete command fingerprint.
+            identity_input = {"argv": self.command}
         return hashlib.sha256(
             json.dumps(identity_input, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()[:16]
 
     @property
     def name(self) -> str:
-        """Role-independent implementation identity for reproducibility and separation checks."""
+        """Role/config identity used in manifests and audit records."""
 
         return self._identity
 
     @property
     def independence_key(self) -> str:
-        return self._identity
+        """Role-independent implementation identity used to prevent self-verification."""
+
+        return f"implementation:{Path(self.command[0]).name}:{self._independence_fingerprint}"
 
     def _invoke(self, request: dict[str, Any]) -> Any:
         completed = subprocess.run(
