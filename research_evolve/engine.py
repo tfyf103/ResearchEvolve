@@ -254,15 +254,30 @@ class ResearchEngine:
                 resolved.append(candidate)
         return resolved
 
+    def _sync_conjecture_graph_from_memory(self) -> None:
+        for record in self.conjectures.recent_conjectures(100000):
+            conjecture = Conjecture.from_dict(record)
+            conjecture.status = record["status"]  # type: ignore[assignment]
+            self._record_conjecture(
+                conjecture,
+                int(record["generation"]),
+                status=str(record["status"]),
+                tests=int(record["tests"]),
+                supports=int(record["supports"]),
+            )
+
     def _restore_checkpoint(self, checkpoint: SearchCheckpoint) -> None:
         self.evaluated = checkpoint.evaluated
         self.valid = checkpoint.valid
         self.rng.setstate(checkpoint.rng_state)
+        removed_candidate_ids = self.db.prune_after_generation(checkpoint.generation)
         self.ideas.prune_after_generation(checkpoint.generation)
         self.conjectures.prune_after_generation(
             checkpoint.generation,
             min_evidence=self.spec.conjecture.min_evidence,
         )
+        self.graph.prune_after_generation(checkpoint.generation, candidate_ids=removed_candidate_ids)
+        self._sync_conjecture_graph_from_memory()
         islands = [self._resolve_candidates(candidate_ids) for candidate_ids in checkpoint.island_candidate_ids]
         self.population.restore(islands)
         self.pareto.restore(self._resolve_candidates(checkpoint.pareto_candidate_ids))
@@ -452,14 +467,38 @@ class ResearchEngine:
         self._record_counterexample(counterexample)
         return counterexample
 
+    def _retest_active_conjectures(self, generation: int, candidate_pool: list[Candidate]) -> None:
+        records = self.conjectures.recent_conjectures(self.spec.conjecture.context_conjectures)
+        for record in records:
+            if record["status"] not in {"proposed", "empirically_supported"}:
+                continue
+            conjecture = Conjecture.from_dict(record)
+            conjecture.status = record["status"]  # type: ignore[assignment]
+            for candidate in candidate_pool:
+                if self._test_candidate_against_conjecture(
+                    conjecture,
+                    candidate,
+                    generation,
+                    "archive_retest",
+                ) is not None:
+                    break
+            status = self.conjectures.refresh_status(conjecture.id, self.spec.conjecture.min_evidence)
+            conjecture.status = status  # type: ignore[assignment]
+            self._record_conjecture(
+                conjecture,
+                int(record["generation"]),
+                status=status,
+                retested_generation=generation,
+            )
+
     def _counterexample_search(
         self,
         conjecture: Conjecture,
         generation: int,
         evaluator: EvaluatorCascade,
-        context_candidates: list[Candidate],
     ) -> str:
-        for candidate in context_candidates:
+        scan_candidates = self._archive_candidate_pool(self.spec.conjecture.context_candidates)
+        for candidate in scan_candidates:
             if self._test_candidate_against_conjecture(conjecture, candidate, generation, "archive") is not None:
                 return self.conjectures.refresh_status(conjecture.id, self.spec.conjecture.min_evidence)
 
@@ -480,7 +519,12 @@ class ResearchEngine:
                 generation=generation,
             )
             self._evaluate(child, evaluator, island_index)
-            if self._test_candidate_against_conjecture(conjecture, child, generation, "counterexample_search") is not None:
+            if self._test_candidate_against_conjecture(
+                conjecture,
+                child,
+                generation,
+                "counterexample_search",
+            ) is not None:
                 return self.conjectures.refresh_status(conjecture.id, self.spec.conjecture.min_evidence)
 
         return self.conjectures.refresh_status(conjecture.id, self.spec.conjecture.min_evidence)
@@ -492,6 +536,8 @@ class ResearchEngine:
             return
 
         candidate_pool = self._archive_candidate_pool(self.spec.conjecture.context_candidates)
+        self._retest_active_conjectures(generation, candidate_pool)
+
         observations = self.observation_extractor.extract(
             candidate_pool,
             generation,
@@ -535,7 +581,7 @@ class ResearchEngine:
                 self._record_conjecture(conjecture, generation, status="invalid", error=reason)
                 continue
 
-            status = self._counterexample_search(conjecture, generation, evaluator, candidate_pool)
+            status = self._counterexample_search(conjecture, generation, evaluator)
             conjecture.status = status  # type: ignore[assignment]
             self._record_conjecture(conjecture, generation, status=status)
 
