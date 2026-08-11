@@ -157,8 +157,8 @@ class ProofArtifact:
     id: str = field(default_factory=lambda: f"proof-artifact-{uuid.uuid4().hex}")
     created_at: str = field(default_factory=_utcnow)
 
-    def validate(self, plan: ProofPlan) -> None:
-        plan.validate()
+    def validate(self, plan: ProofPlan, max_lemmas: int = 32) -> None:
+        plan.validate(max_lemmas=max_lemmas)
         expected = {lemma.label for lemma in plan.lemmas}
         supplied = set(self.lemma_arguments)
         missing = sorted(expected - supplied)
@@ -365,19 +365,45 @@ class ProofMemory:
                 review.created_at,
             ),
         )
-        self.conn.execute("UPDATE proof_artifacts SET status = ? WHERE id = ?", (status, review.proof_artifact_id))
         row = self.conn.execute(
-            "SELECT proof_spec_id FROM proof_artifacts WHERE id = ?",
+            "SELECT proof_spec_id, proof_plan_id FROM proof_artifacts WHERE id = ?",
             (review.proof_artifact_id,),
         ).fetchone()
+        self.conn.execute("UPDATE proof_artifacts SET status = ? WHERE id = ?", (status, review.proof_artifact_id))
         if row is not None:
             self.conn.execute("UPDATE proof_specs SET status = ? WHERE id = ?", (status, row["proof_spec_id"]))
+            self.conn.execute("UPDATE proof_plans SET status = ? WHERE id = ?", (status, row["proof_plan_id"]))
         self.conn.commit()
         return status
 
     def mark_spec_invalid(self, proof_spec_id: str) -> None:
         self.conn.execute("UPDATE proof_specs SET status = 'invalid' WHERE id = ?", (proof_spec_id,))
+        self.conn.execute("UPDATE proof_plans SET status = 'invalid' WHERE proof_spec_id = ?", (proof_spec_id,))
+        self.conn.execute("UPDATE proof_artifacts SET status = 'invalid' WHERE proof_spec_id = ?", (proof_spec_id,))
         self.conn.commit()
+
+    def invalidate_conjecture_proofs(self, conjecture_id: str, reason: str) -> int:
+        rows = self.conn.execute(
+            "SELECT id, payload FROM proof_specs WHERE conjecture_id = ? AND status != 'invalid'",
+            (conjecture_id,),
+        ).fetchall()
+        proof_spec_ids: list[str] = []
+        for row in rows:
+            payload = json.loads(row["payload"])
+            metadata = dict(payload.get("metadata", {}))
+            metadata["invalidation_reason"] = reason
+            metadata["invalidated_at"] = _utcnow()
+            payload["metadata"] = metadata
+            self.conn.execute(
+                "UPDATE proof_specs SET status = 'invalid', payload = ? WHERE id = ?",
+                (json.dumps(payload, sort_keys=True), row["id"]),
+            )
+            proof_spec_ids.append(str(row["id"]))
+        for proof_spec_id in proof_spec_ids:
+            self.conn.execute("UPDATE proof_plans SET status = 'invalid' WHERE proof_spec_id = ?", (proof_spec_id,))
+            self.conn.execute("UPDATE proof_artifacts SET status = 'invalid' WHERE proof_spec_id = ?", (proof_spec_id,))
+        self.conn.commit()
+        return len(proof_spec_ids)
 
     def has_verified_for_conjecture(self, conjecture_id: str) -> bool:
         row = self.conn.execute(
