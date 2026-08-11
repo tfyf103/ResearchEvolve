@@ -95,6 +95,17 @@ class ProofPipeline:
         self.problem = str(spec.get("problem", ""))
         self.constraints = [dict(item) for item in spec.get("constraints", []) if isinstance(item, dict)]
         self.domain = str(spec.get("domain", "generic"))
+        metadata = spec.get("metadata", {})
+        if metadata is None:
+            metadata = {}
+        if not isinstance(metadata, dict):
+            raise ValueError("ResearchSpec.metadata must be an object for proof extraction")
+        raw_proof_assumptions = metadata.get("proof_assumptions", [])
+        if raw_proof_assumptions is None:
+            raw_proof_assumptions = []
+        if not isinstance(raw_proof_assumptions, list):
+            raise ValueError("ResearchSpec.metadata.proof_assumptions must be a list")
+        self.proof_assumptions = [str(item).strip() for item in raw_proof_assumptions if str(item).strip()]
 
         proof_db_path = self.workspace / "proofs.sqlite3"
         proof_manifest_path = self.workspace / "proof_manifest.json"
@@ -171,6 +182,49 @@ class ProofPipeline:
         summary["counterexample_count"] = stats["counterexamples"]
         path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    def _sync_invalidated_proof_graph(self, conjecture_id: str) -> None:
+        specs = [item for item in self.memory.list_specs(100000) if item.get("conjecture_id") == conjecture_id]
+        spec_ids = {str(item["id"]) for item in specs}
+        for item in specs:
+            if item.get("status") != "invalid":
+                continue
+            self.graph.add_node(
+                ResearchNode(
+                    id=str(item["id"]),
+                    type="proof_spec",
+                    statement=str(item.get("statement", "")),
+                    status="invalid",
+                    payload=item,
+                    created_at=str(item.get("created_at", "")),
+                )
+            )
+        for item in self.memory.list_plans(100000):
+            if str(item.get("proof_spec_id")) not in spec_ids or item.get("status") != "invalid":
+                continue
+            self.graph.add_node(
+                ResearchNode(
+                    id=str(item["id"]),
+                    type="proof_plan",
+                    statement=str(item.get("strategy", "")),
+                    status="invalid",
+                    payload=item,
+                    created_at=str(item.get("created_at", "")),
+                )
+            )
+        for item in self.memory.list_artifacts(100000):
+            if str(item.get("proof_spec_id")) not in spec_ids or item.get("status") != "invalid":
+                continue
+            self.graph.add_node(
+                ResearchNode(
+                    id=str(item["id"]),
+                    type="proof_artifact",
+                    statement=str(item.get("final_argument", ""))[:240],
+                    status="invalid",
+                    payload=item,
+                    created_at=str(item.get("created_at", "")),
+                )
+            )
+
     def _record_counterexample(self, conjecture: Conjecture, candidate: Candidate) -> None:
         counterexample = Counterexample(
             conjecture_id=conjecture.id,
@@ -190,6 +244,12 @@ class ProofPipeline:
         )
         self.conjectures.record_counterexample(counterexample)
         self.conjectures.refresh_status(conjecture.id, min_evidence=1)
+        invalidated = self.memory.invalidate_conjecture_proofs(
+            conjecture.id,
+            f"Existing evaluated candidate {candidate.id} refuted the conjecture during proof preflight.",
+        )
+        if invalidated:
+            self._sync_invalidated_proof_graph(conjecture.id)
         self._sync_source_summary_conjecture_stats()
         self.graph.add_node(
             ResearchNode(
@@ -277,6 +337,7 @@ class ProofPipeline:
             metadata={
                 "domain": self.domain,
                 "constraints": self.constraints,
+                "proof_assumptions": list(proof_spec.assumptions),
                 "truth_policy": (
                     "Empirical evidence is context, not proof. The prover must establish the exact ProofSpec; "
                     "the verifier must independently attack it."
@@ -404,11 +465,12 @@ class ProofPipeline:
         conjecture_record: dict[str, Any],
         candidates: list[Candidate],
     ) -> str:
-        assumptions = [
+        constraint_assumptions = [
             str(item.get("description") or item.get("name"))
             for item in self.constraints
             if item.get("hard", True)
         ]
+        assumptions = list(dict.fromkeys(constraint_assumptions + self.proof_assumptions))
         proof_spec = ProofSpec.from_conjecture(
             conjecture,
             generation=self.source_generation,
@@ -481,7 +543,6 @@ class ProofPipeline:
             record
             for record in self.conjectures.recent_conjectures(100000)
             if record["status"] == "empirically_supported"
-            and not self.memory.has_verified_for_conjecture(str(record["id"]))
         ][: self.max_conjectures]
 
         considered = 0
@@ -501,6 +562,8 @@ class ProofPipeline:
                 record,
             )
             if refreshed["status"] != "empirically_supported":
+                continue
+            if self.memory.has_verified_for_conjecture(conjecture.id):
                 continue
             attempted += 1
             statuses.append(self._attempt(conjecture, refreshed, candidates))
