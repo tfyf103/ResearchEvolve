@@ -107,10 +107,11 @@ import json, sys
 request = json.load(sys.stdin)
 parent = request['context']['candidates'][0]['id']
 print(json.dumps({'proposals': [{
+    'id': 'problem-collision',
     'kind': 'semantic_mutation',
     'parent_ids': [parent],
     'patch': {'set': {'x': 5}},
-    'genome': {'construction': 'scripted'},
+    'genome': {'id': 'candidate-collision', 'construction': 'scripted'},
     'rationale': 'move x',
     'confidence': 0.8
 }]}))
@@ -129,6 +130,10 @@ print(json.dumps({'proposals': [{
     assert proposals[0].parent_ids == ["p1"]
     assert proposals[0].patch.set_values["x"] == 5
     assert "move x" in proposals[0].rationale
+    assert proposals[0].id != "problem-collision"
+    assert proposals[0].genome.id != "candidate-collision"
+    assert proposals[0].metadata["external_proposal_id"] == "problem-collision"
+    assert proposals[0].metadata["external_idea_id"] == "candidate-collision"
 
 
 def test_command_explorer_identity_changes_with_wrapper_contents(tmp_path: Path) -> None:
