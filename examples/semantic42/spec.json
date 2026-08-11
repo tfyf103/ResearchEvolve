@@ -1,0 +1,35 @@
+{
+  "name": "semantic-42-demo",
+  "problem": "Find x close to 42 while demonstrating structured semantic research proposals.",
+  "domain": "generic",
+  "mode": "metric_search",
+  "objectives": [
+    {"name": "distance_to_42", "direction": "minimize", "weight": 1.0}
+  ],
+  "constraints": [],
+  "behavior_dimensions": ["representation"],
+  "budget": {
+    "generations": 2,
+    "population_size": 3,
+    "evaluator_timeout_seconds": 10,
+    "seed": 7
+  },
+  "search": {
+    "novelty_probability": 0.25,
+    "novelty_k": 3,
+    "migration_interval": 2,
+    "migrants_per_island": 1,
+    "checkpoint_interval": 1
+  },
+  "explorer": {
+    "enabled": true,
+    "interval": 1,
+    "proposals_per_interval": 2,
+    "context_candidates": 6,
+    "feedback_items": 6,
+    "timeout_seconds": 10
+  },
+  "metadata": {
+    "purpose": "provider-neutral Explorer protocol smoke test"
+  }
+}

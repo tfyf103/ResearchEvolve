@@ -9,7 +9,9 @@ from typing import Any
 from .candidates import CandidateDB
 from .domain import DomainPack, load_domain_pack
 from .engine import ResearchEngine
+from .explorer import CommandExplorer
 from .graph import ResearchGraph
+from .ideas import IdeaMemory
 from .mutation import FourLevelMutator
 from .spec import ResearchSpec
 
@@ -58,6 +60,14 @@ def _cmd_init(args: argparse.Namespace) -> int:
             "migrants_per_island": 1,
             "checkpoint_interval": 1
         },
+        "explorer": {
+            "enabled": False,
+            "interval": 1,
+            "proposals_per_interval": 2,
+            "context_candidates": 8,
+            "feedback_items": 12,
+            "timeout_seconds": 60
+        },
         "metadata": {},
     }
     path = Path(args.output)
@@ -84,7 +94,21 @@ def _cmd_run(args: argparse.Namespace) -> int:
     if not evaluator_paths:
         raise SystemExit("provide at least one --evaluator or use --domain-pack")
 
-    with ResearchEngine(spec, workspace=args.workspace, island_count=args.islands, mutator=mutator) as engine:
+    explorer = None
+    if args.explorer_command:
+        if not spec.explorer.enabled:
+            raise SystemExit("--explorer-command requires explorer.enabled=true in the ResearchSpec")
+        explorer = CommandExplorer(args.explorer_command, timeout_seconds=spec.explorer.timeout_seconds)
+    elif spec.explorer.enabled:
+        raise SystemExit("ResearchSpec enables explorer proposals; provide --explorer-command")
+
+    with ResearchEngine(
+        spec,
+        workspace=args.workspace,
+        island_count=args.islands,
+        mutator=mutator,
+        explorer=explorer,
+    ) as engine:
         summary = engine.run(
             seeds,
             evaluator_paths,
@@ -130,8 +154,18 @@ def _cmd_json_artifact(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_idea_memory(args: argparse.Namespace) -> int:
+    memory = IdeaMemory(Path(args.workspace) / "ideas.sqlite3")
+    try:
+        data = memory.list_ideas(args.limit) if args.memory_kind == "ideas" else memory.list_proposals(args.limit)
+    finally:
+        memory.close()
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="research-evolve", description="ResearchEvolve v0.2 research harness")
+    parser = argparse.ArgumentParser(prog="research-evolve", description="ResearchEvolve v0.3 research harness")
     sub = parser.add_subparsers(dest="command", required=True)
 
     init = sub.add_parser("init", help="write a ResearchSpec JSON template")
@@ -147,6 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--workspace", default=".researchevolve/run")
     run.add_argument("--islands", type=int, default=4)
     run.add_argument("--mutator", help="optional custom mutator as module:Class")
+    run.add_argument("--explorer-command", help="external Explorer command using the v0.3 JSON stdin/stdout protocol")
     run.add_argument("--resume", action="store_true", help="resume from the workspace generation checkpoint")
     run.set_defaults(func=_cmd_run)
 
@@ -168,6 +203,16 @@ def build_parser() -> argparse.ArgumentParser:
     manifest = sub.add_parser("manifest", help="show the reproducibility manifest for a run")
     manifest.add_argument("--workspace", default=".researchevolve/run")
     manifest.set_defaults(func=_cmd_json_artifact, artifact="manifest.json", limit=None)
+
+    ideas = sub.add_parser("ideas", help="show recent structured Idea Genomes")
+    ideas.add_argument("--workspace", default=".researchevolve/run")
+    ideas.add_argument("--limit", type=int, default=20)
+    ideas.set_defaults(func=_cmd_idea_memory, memory_kind="ideas")
+
+    proposals = sub.add_parser("proposals", help="show Explorer proposals and evaluator outcomes")
+    proposals.add_argument("--workspace", default=".researchevolve/run")
+    proposals.add_argument("--limit", type=int, default=20)
+    proposals.set_defaults(func=_cmd_idea_memory, memory_kind="proposals")
     return parser
 
 

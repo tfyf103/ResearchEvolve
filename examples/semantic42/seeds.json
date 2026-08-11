@@ -1,0 +1,4 @@
+[
+  {"x": 0, "representation": "direct"},
+  {"x": 64, "representation": "factorized"}
+]
