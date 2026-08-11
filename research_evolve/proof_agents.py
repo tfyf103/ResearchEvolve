@@ -72,7 +72,7 @@ class _CommandActor:
         self.timeout_seconds = float(timeout_seconds)
         self.role = role
         self._implementation_fingerprint = self._build_implementation_fingerprint()
-        self._identity = f"command:{self.role}:{Path(self.command[0]).name}:{self._implementation_fingerprint}"
+        self._identity = f"command:{Path(self.command[0]).name}:{self._implementation_fingerprint}"
 
     def _build_implementation_fingerprint(self) -> str:
         files: list[dict[str, str]] = []
@@ -87,13 +87,13 @@ class _CommandActor:
 
     @property
     def name(self) -> str:
+        """Role-independent implementation identity for reproducibility and separation checks."""
+
         return self._identity
 
     @property
     def independence_key(self) -> str:
-        """Role-independent implementation identity used to prevent self-verification."""
-
-        return f"command:{Path(self.command[0]).name}:{self._implementation_fingerprint}"
+        return self._identity
 
     def _invoke(self, request: dict[str, Any]) -> Any:
         completed = subprocess.run(
