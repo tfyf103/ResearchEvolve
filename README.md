@@ -2,61 +2,99 @@
 
 > **A research harness for AI-driven mathematical discovery.**
 >
-> ResearchEvolve 把 **LLM 创造性、演化搜索、自动评测、经验猜想、反例攻击、自然语言证明与独立验证** 放进一个可审计、可恢复、可复现的科研执行环境。
+> ResearchEvolve 把 **演化搜索、LLM 研究提案、自动评测、经验猜想、反例攻击、自然语言证明、独立验证与 Lean 形式化验证** 放进同一个可审计、可恢复、可复现的科研执行环境。
 
-当前版本：**v0.5.0**
+当前版本：**v0.6.0**
 
-## 核心思想
+## ResearchEvolve 在解决什么问题？
 
-ResearchEvolve 不让一个模型同时扮演“提出想法、评测、证明、宣布正确”的全部角色，而是把研究过程拆成彼此可审计的可信边界：
+ResearchEvolve 不让一个模型同时承担：
 
 ```text
-ResearchSpec
-    │
-    ├── Four-level Mutation ─────────────┐
-    │                                    │
-    ├── Explorer → Idea Genome ──────────┤
-    │                                    ▼
-    │                                Candidate
-    │                                    │
-    │                            Evaluator Cascade
-    │                                    │
-    │                   MAP-Elites / Pareto / Novelty
-    │                                    │
-    └── Observation → Conjecture ─────────┤
-                         │                │
-                         ▼                │
-                 Counterexample Search ◄──┘
-                         │
-                         ▼
-              empirically_supported
-                         │
-                         ▼
-                   Proof Pipeline
-      ProofSpec → ProofPlan → Lemma DAG → Prover
-                                      │
-                                      ▼
-                           Independent Verifier
-                                      │
-                                      ▼
-                         verified_natural_language
+提出想法
++ 生成候选
++ 评测候选
++ 提出猜想
++ 写证明
++ 宣布证明正确
 ```
 
-### 不可跨越的状态边界
+而是把研究过程拆成越来越强的可信边界：
 
 ```text
-有限实验通过
-    ≠ theorem proved
+                         ResearchSpec
+                              │
+            ┌─────────────────┼─────────────────┐
+            ▼                 ▼                 ▼
+     Four-level Mutation   Explorer/LLM     Observation
+            │                 │                 │
+            │             Idea Genome           ▼
+            │                 │             Conjecturer
+            └──────────┬──────┘                 │
+                       ▼                        ▼
+                   Candidate                Conjecture
+                       │                        │
+                       ▼                        ▼
+               Evaluator Cascade      Counterexample Search
+                       │                        │
+          MAP-Elites / Pareto / Novelty        │
+                       │                        │
+                       └────────────┬───────────┘
+                                    ▼
+                           empirically_supported
+                                    │
+                                    ▼
+                              Proof Pipeline
+            ProofSpec → Lemma DAG → Prover → Independent Verifier
+                                    │
+                                    ▼
+                         verified_natural_language
+                                    │
+                                    ▼
+                           FormalizationSpec
+                                    │
+                                    ▼
+                                Formalizer
+                                    │
+                              Lean proof term
+                                    │
+                                    ▼
+                              Lean Kernel Gate
+                              │             │
+                           failure       success
+                              │             │
+                              ▼             ▼
+                         diagnostics    axiom audit
+                              │             │
+                              ▼             ▼
+                           Repairer    formal_verified
+                              │
+                              └──────────► Lean
+```
 
-LLM 写出证明
-    ≠ proof verified
+## 状态边界
+
+ResearchEvolve 刻意区分：
+
+```text
+实验样本都通过
+    ≠ 数学证明
+
+LLM 写出一段证明
+    ≠ 已验证证明
 
 独立自然语言 verifier 接受
     = verified_natural_language
-    ≠ formal_verified
+    ≠ Lean kernel proof
+
+冻结的 Lean theorem
++ 指定 Lean toolchain
++ kernel 成功
++ axiom audit 通过
+    = formal_verified
 ```
 
-真正的 `formal_verified` 留给后续 Lean / Coq / Isabelle / kernel checking。
+即使得到 `formal_verified`，它也只说明**被冻结的 Lean theorem**通过了形式系统。自然语言研究命题到 Lean theorem 的语义映射仍必须由显式 `formal_contracts` 审计。
 
 ---
 
@@ -117,12 +155,33 @@ LLM 写出证明
 - hidden-assumption rejection
 - Prover / Verifier implementation-separation check
 - deterministic verifier gate
-- stale-proof invalidation when a later counterexample appears
+- stale-proof invalidation
 - persistent `ProofMemory`
 - independent `proof_manifest.json`
-- proof lineage in `ResearchGraph`
 
 详细设计：[`docs/V0.5.md`](docs/V0.5.md)
+
+## v0.6 — Lean Formal Verification + Repair
+
+- frozen `FormalizationSpec`
+- explicit `ResearchSpec.metadata.formal_contracts`
+- frozen Lean imports / preamble / theorem signature / toolchain
+- provider-neutral Formalizer / Repairer protocol
+- model may generate only theorem body / proof term
+- conservative source escape-hatch gate
+- exact Lean version check
+- real Lean compiler/kernel execution
+- structured Lean diagnostics
+- kernel-driven repair loop
+- `#print axioms` dependency audit
+- default allowlist: `propext`, `Classical.choice`, `Quot.sound`
+- persistent `FormalMemory`
+- `formal_manifest.json`
+- persisted `.lean` source artifacts
+- stale formal-proof invalidation
+- first genuine `formal_verified` status
+
+详细设计：[`docs/V0.6.md`](docs/V0.6.md)
 
 ---
 
@@ -146,18 +205,24 @@ Windows PowerShell：
 .venv\Scripts\Activate.ps1
 ```
 
-安装：
+安装 Python 包：
 
 ```bash
 pip install -e ".[dev]"
 pytest -q
 ```
 
+v0.6 的形式化阶段还需要 Lean。仓库包含：
+
+```text
+lean-toolchain
+```
+
+用于固定集成验证 toolchain。
+
 ---
 
-# Demo 1：target42
-
-验证最基础的 evolutionary research loop：
+# Demo 1：target42 — 基础搜索闭环
 
 ```bash
 research-evolve run \
@@ -189,7 +254,7 @@ research-evolve run \
   --islands 4
 ```
 
-当前内置 benchmark 是纯 Python、小规模、正确性优先的 circulant bicycle/CSS pipeline：
+当前内置 benchmark：
 
 ```text
 constraints + CSS commutation
@@ -199,11 +264,11 @@ GF(2) rank → n, k, rate, row weight
 exact small-code distance enumeration
 ```
 
-> exact distance 当前只用于 `size <= 7` 的集成 benchmark，不是生产级 qLDPC distance solver。后续可以替换为 BP、BP-OSD、OSD-CS、MILP，而无需改通用 Research Engine。
+> exact distance 当前只用于 `size <= 7` 的集成 benchmark，不是生产级 qLDPC distance solver。以后可以接 BP / BP-OSD / OSD-CS / MILP，而无需重写通用 Research Engine。
 
 ---
 
-# Demo 3：semantic42
+# Demo 3：semantic42 — Idea Genome / Semantic Evolution
 
 ```bash
 research-evolve run \
@@ -215,8 +280,6 @@ research-evolve run \
   --islands 2
 ```
 
-查看：
-
 ```bash
 research-evolve ideas --workspace .researchevolve/semantic42
 research-evolve proposals --workspace .researchevolve/semantic42
@@ -224,7 +287,7 @@ research-evolve proposals --workspace .researchevolve/semantic42
 
 ---
 
-# Demo 4：conjecture42
+# Demo 4：conjecture42 — Conjecture / Counterexample
 
 ```bash
 research-evolve run \
@@ -236,8 +299,6 @@ research-evolve run \
   --islands 2
 ```
 
-查看：
-
 ```bash
 research-evolve observations --workspace .researchevolve/conjecture42
 research-evolve conjectures --workspace .researchevolve/conjecture42
@@ -246,31 +307,15 @@ research-evolve counterexamples --workspace .researchevolve/conjecture42
 
 Demo 中：
 
-- `score < 0` 会被 `x=42, score=0` 反驳；
-- `distance_to_42 >= 0` 会在有限证据下变成 `empirically_supported`；
-- v0.4 不会把它标成 proved。
+- `score < 0` 被 `x=42, score=0` 反驳；
+- `distance_to_42 >= 0` 只会变成 `empirically_supported`；
+- 有限实验不会被宣传成证明。
 
 ---
 
-# Demo 5：proof42
+# Demo 5：proof42 — Natural-language Proof Pipeline
 
-v0.5 证明阶段是一个**独立的 post-research phase**。
-
-## Step 1：先完成发现 / 猜想阶段
-
-proof42 使用专用 ResearchSpec，因为其中显式声明了证明所需的距离定义：
-
-```json
-{
-  "metadata": {
-    "proof_assumptions": [
-      "For every evaluated numeric candidate x, distance_to_42 is defined as abs(x - 42)."
-    ]
-  }
-}
-```
-
-运行：
+## 1. Research / Conjecture
 
 ```bash
 research-evolve run \
@@ -282,7 +327,7 @@ research-evolve run \
   --islands 2
 ```
 
-## Step 2：运行 Proof Pipeline
+## 2. Proof
 
 ```bash
 research-evolve prove \
@@ -295,7 +340,7 @@ research-evolve prove \
   --min-verifier-confidence 0.7
 ```
 
-## Step 3：检查证明链
+查看：
 
 ```bash
 research-evolve proof-specs --workspace .researchevolve/proof42
@@ -305,165 +350,305 @@ research-evolve proof-reviews --workspace .researchevolve/proof42
 research-evolve proof-manifest --workspace .researchevolve/proof42
 ```
 
-预期链路：
+v0.5 最强状态：
 
 ```text
-Empirically Supported Conjecture
-              │
-              ▼
-     scan every valid CandidateDB row
-              │
-       counterexample?
-        ┌─────┴─────┐
-       yes          no
-        ▼            ▼
-     refuted      ProofSpec
-                      │
-                      ▼
-                  ProofPlan
-                      │
-               Lemma DAG
-                      │
-                      ▼
-                 ProofArtifact
-                      │
-                      ▼
-            Independent Verifier
-                      │
-                      ▼
-          verified_natural_language
+verified_natural_language
+```
+
+而不是 `formal_verified`。
+
+---
+
+# Demo 6：formal42 — Real Lean Kernel + Repair Loop
+
+`formal42` 从头跑完：
+
+```text
+Research
+→ Conjecture
+→ Natural-language Proof
+→ Independent NL Verification
+→ Lean Formalization
+→ Lean failure
+→ Repair
+→ Lean success
+→ Axiom audit
+→ formal_verified
+```
+
+## Step 1：研究 / 猜想
+
+```bash
+research-evolve run \
+  --spec examples/formal42/spec.json \
+  --evaluator examples/target42/evaluator.py \
+  --seeds examples/formal42/seeds.json \
+  --conjecturer-command "python examples/conjecture42/conjecturer.py" \
+  --workspace .researchevolve/formal42 \
+  --islands 2
+```
+
+## Step 2：自然语言证明
+
+```bash
+research-evolve prove \
+  --workspace .researchevolve/formal42 \
+  --planner-command "python examples/proof42/planner.py" \
+  --prover-command "python examples/proof42/prover.py" \
+  --verifier-command "python examples/proof42/verifier.py"
+```
+
+## Step 3：Lean Formalization
+
+```bash
+research-evolve formalize \
+  --workspace .researchevolve/formal42 \
+  --formalizer-command "python examples/formal42/formalizer.py" \
+  --repairer-command "python examples/formal42/repairer.py" \
+  --lean-command lean \
+  --max-targets 4 \
+  --max-repairs 2
+```
+
+这个 demo 的第一次 Formalizer 输出**故意是错误的 Lean proof term**：
+
+```lean
+by exact 0
+```
+
+真实 Lean 必须拒绝它。Repairer 再基于 kernel diagnostics 返回：
+
+```lean
+by exact Nat.zero_le _
+```
+
+只有第二次真实 kernel gate 成功后，状态才可能成为：
+
+```text
+formal_verified
+```
+
+查看：
+
+```bash
+research-evolve formal-specs --workspace .researchevolve/formal42
+research-evolve formal-artifacts --workspace .researchevolve/formal42
+research-evolve kernel-runs --workspace .researchevolve/formal42
+research-evolve formal-manifest --workspace .researchevolve/formal42
 ```
 
 ---
 
-# v0.5：ProofSpec 为什么必须冻结 assumptions
+# v0.6：为什么需要 `formal_contracts`？
 
-一个数学证明经常依赖：
+如果让 Formalizer 自己同时写 theorem signature 和 proof，它可以把困难命题改成简单命题再让 Lean 验证。
 
-- 定义；
-- 归一化约定；
-- 问题硬约束；
-- 已明确给定的公理或领域前提。
-
-这些不能由 Prover 自己临时补出来。
-
-ResearchEvolve v0.5 把两类前提冻结进 `ProofSpec.assumptions`：
-
-1. `ResearchSpec.constraints` 中的 hard constraints；
-2. `ResearchSpec.metadata.proof_assumptions` 中显式声明的定义 / 公理。
-
-例如：
+所以 ResearchSpec 必须显式冻结目标：
 
 ```json
 {
   "metadata": {
-    "proof_assumptions": [
-      "Hx * Hz^T = 0 over GF(2) by the construction definition.",
-      "The group operation is taken modulo l."
+    "formal_contracts": [
+      {
+        "conjecture_statement": "Distance to 42 is always non-negative for evaluated candidates.",
+        "backend": "lean4",
+        "toolchain": "leanprover/lean4:v4.30.0",
+        "theorem_name": "distance_to_42_nonnegative",
+        "theorem_signature": "theorem distance_to_42_nonnegative (x : Int) : 0 ≤ Int.natAbs (x - 42)",
+        "imports": [],
+        "preamble": "",
+        "metadata": {
+          "semantic_mapping": "Explain why this Lean theorem faithfully represents the research claim."
+        }
+      }
     ]
   }
 }
 ```
 
-Prover 返回：
+Contract 通过完整 `conjecture_statement` 匹配。
+
+如果没有 contract：
+
+```text
+missing_contract
+```
+
+ResearchEvolve 不会让 Formalizer 临时发明一个 theorem。
+
+---
+
+# Frozen `preamble`
+
+如果形式化命题需要项目自己的定义，把定义放进受信任的 contract：
 
 ```json
 {
-  "assumptions_used": [
-    "The group operation is taken modulo l."
-  ]
+  "preamble": "def distanceTo42 (x : Int) : Nat := Int.natAbs (x - 42)",
+  "theorem_signature": "theorem distanceTo42_nonnegative (x : Int) : 0 ≤ distanceTo42 x"
 }
 ```
 
-如果它使用了 ProofSpec 中不存在的前提，artifact 会在进入 Verifier 之前直接 `invalid`。
+最终 Lean source：
 
-> `proof_assumptions` 是显式研究输入，不是系统替你证明的事实。对真实论文工作，应确保这些前提本身来自问题定义、已验证构造或可引用的定理。
+```lean
+-- frozen imports
+
+-- frozen preamble
+def distanceTo42 ... := ...
+
+-- frozen theorem signature; only body is generated
+theorem distanceTo42_nonnegative ... := by
+  ...
+
+#print axioms distanceTo42_nonnegative
+```
+
+Formalizer 不能重新定义 `distanceTo42`。
 
 ---
 
-# v0.5：Verifier gate
+# v0.6 Lean Kernel Gate
 
-Verifier 的原始输出：
+模型输出首先经过 conservative source gate。
 
-```text
-verified | rejected | inconclusive
-```
-
-ResearchEvolve 再做确定性 gate：
+默认拒绝：
 
 ```text
-verifier says rejected
-    → rejected
-
-any VerificationIssue.severity == error
-    → rejected
-
-verified + confidence < threshold
-    → inconclusive
-
-verified + no error + confidence >= threshold
-    → verified_natural_language
+sorry
+admit
+axiom
+unsafe
+extern
+opaque
+run_tac
+elab
+macro
+syntax
+#eval
+#run
 ```
 
-如果 Verifier 进程崩溃，ResearchEvolve 会写入一个 synthetic `inconclusive` review，而不会把 artifact 留在一个容易被误读的“drafted but maybe verified”状态。
+v0.6 还拒绝 model-supplied top-level `helper_source`。
+
+Formalizer 可以在 theorem body 中写：
+
+```lean
+by
+  have h₁ : ... := ...
+  have h₂ : ... := ...
+  exact ...
+```
+
+但不能在 theorem 前注入新的全局声明。
 
 ---
 
-# Prover / Verifier 独立性
+# Toolchain 与 Axiom Audit
 
-Command actors 有两种身份：
+`formal_verified` 不只依赖 `lean` 返回码。
+
+ResearchEvolve 要求：
 
 ```text
-config identity
-    用于 manifest / 审计，包含角色和完整命令配置
-
-independence identity
-    用于判断是否同一个底层实现
+source gate pass
+        +
+lean --version == frozen toolchain
+        +
+Lean exit code = 0
+        +
+no Lean error
+        +
+#print axioms output parseable
+        +
+no disallowed axiom dependency
 ```
 
-因此即使：
+默认允许的 Lean 标准公理：
 
-```bash
-python same_wrapper.py --role prover
-python same_wrapper.py --role verifier
+```text
+propext
+Classical.choice
+Quot.sound
 ```
 
-只要它们指向同一个 wrapper 实现，v0.5 仍会拒绝这种“自证”。
+默认拒绝例如：
 
-生产环境最好进一步使用：
+```text
+sorryAx
+Lean.trustCompiler
+Custom.myAxiom
+```
 
-- 不同模型；
-- 不同系统提示；
-- 不同 worker；
-- 不同供应商；
-- 或最终使用 proof assistant kernel。
+因此：
+
+```text
+Lean process returned 0
+```
+
+仍不等于一定拿到：
+
+```text
+formal_verified
+```
 
 ---
 
-# Stale proof invalidation
+# Repair Loop
 
-自然语言验证不是永久真理标签。
-
-每次 `research-evolve prove` 都会先重新扫描所有已经独立评测过的 valid candidates。
-
-如果一个过去 `verified_natural_language` 的猜想后来被新 Candidate 反驳：
+失败结果会形成结构化 `KernelResult`：
 
 ```text
-Conjecture → refuted
-ProofSpec → invalid
-ProofPlan → invalid
-Lemma nodes → invalid
-ProofArtifact → invalid
-ProofReview → invalid
+exit_code
+stdout / stderr
+detected Lean version
+diagnostics
+axiom dependencies
+gate_reason
+source SHA-256
 ```
 
-原始 verifier decision 仍然保存在 proof journal 中用于审计，但 gated status 会失效。
+Repairer 看到：
+
+```text
+Frozen FormalizationSpec
+Previous proof term
+KernelResult
+Previous kernel history
+```
+
+然后只能替换 theorem body：
+
+```text
+FormalArtifact #0
+      │
+      ├── kernel_rejected
+      │
+      └── repaired_into
+             ▼
+       FormalArtifact #1
+             │
+             └── formal_verified
+```
+
+预算耗尽：
+
+```text
+repair_exhausted
+```
+
+Lean 环境不存在 / 版本错误：
+
+```text
+environment_error
+```
 
 ---
 
 # 持久化文件
 
-一个完整 v0.5 workspace 可能包含：
+完整 workspace 现在可能包含：
 
 ```text
 .researchevolve/run/
@@ -471,121 +656,130 @@ ProofReview → invalid
 ├── ideas.sqlite3
 ├── conjectures.sqlite3
 ├── proofs.sqlite3
+├── formal.sqlite3
 ├── research_graph.sqlite3
 ├── checkpoint.json
 ├── manifest.json
 ├── proof_manifest.json
+├── formal_manifest.json
 ├── pareto.json
 ├── summary.json
-└── proof_summary.json
+├── proof_summary.json
+├── formal_summary.json
+└── formal_sources/
+    ├── formal-artifact-....lean
+    └── formal-artifact-....lean
 ```
 
-`proofs.sqlite3`：
+三个研究 journal：
 
 ```text
-proof_specs
-proof_plans
-proof_artifacts
-proof_reviews
+ideas.sqlite3
+conjectures.sqlite3
+proofs.sqlite3
+formal.sqlite3
 ```
 
-`proof_manifest.json` 独立记录：
+每次 Lean source 都会保存 SHA-256，kernel run 也保留 diagnostics 与 axiom dependency。
 
-- source research-run fingerprint；
-- Planner / Prover / Verifier identities；
-- Prover / Verifier independence keys；
-- lemma / evidence budgets；
-- verifier confidence threshold。
+---
 
-Proof 阶段不会修改 source `manifest.json` 或 `checkpoint.json`。
+# Stale proof / formal invalidation
+
+ResearchEvolve 不把历史形式化结果当永久不可撤销标签。
+
+例如后来发现反例：
+
+```text
+Conjecture → refuted
+Natural-language ProofSpec → invalid
+FormalizationSpec → invalidated
+FormalArtifact → invalidated
+KernelResult → invalidated
+```
+
+历史 kernel 结果仍保留用于审计，但不会继续作为当前有效 formal certificate。
+
+这里表达的是：
+
+> Lean 在过去可能确实正确证明了某个 frozen theorem，但如果这个 theorem 与当前研究命题之间的上游映射/证据链失效，它不应该继续代表当前研究结论。
 
 ---
 
 # Research Graph
 
-到 v0.5，新增节点：
+到 v0.6，Research Graph 已覆盖：
 
 ```text
-ProofSpec
-ProofPlan
-Lemma
-ProofArtifact
-ProofReview
-ProofActorError
+Problem
+├── Candidate → Evaluation
+├── Idea → Proposal → Candidate
+├── Observation
+├── Conjecture → Counterexample
+├── ProofSpec
+│   └── ProofPlan → Lemma DAG → ProofArtifact → ProofReview
+└── FormalizationSpec
+    └── FormalArtifact
+        ├── LeanKernelResult
+        └── repaired_into → FormalArtifact
 ```
 
-典型 lineage：
+新增关系包括：
 
 ```text
-Conjecture
-    ▲
-    │ targets_conjecture
-ProofSpec
-    ▲
-    │ plans_for
-ProofPlan
-    │
-    ├── decomposes_into → Lemma A
-    ├── decomposes_into → Lemma B
-    └── decomposes_into → Lemma C
-
-ProofArtifact
-    ├── implements_plan → ProofPlan
-    └── claims_proof_of → ProofSpec
-
-ProofReview
-    ├── reviews → ProofArtifact
-    └── supports_natural_language_proof_of → Conjecture
+formalizes_proof
+formal_target_for
+implements_formalization
+checks_formal_artifact
+repaired_into
+formally_verifies
+formally_verifies_proof
 ```
-
-这里故意叫 `claims_proof_of`，因为未验证 artifact 不应被当作 theorem。
 
 ---
 
 # 安全边界
 
-详见 [`SECURITY.md`](SECURITY.md)。
+详细见 [`SECURITY.md`](SECURITY.md)。
 
-简要说：
+尤其注意：
 
-- Evaluator、Explorer、Conjecturer、Proof command actors 都只是协议边界，不是强沙箱；
-- 生产环境应该隔离 Agent、Private Grader、Prover、Verifier；
-- v0.4 Predicate DSL 不执行任意模型代码；
-- v0.5 ProofArtifact 作为结构化文本存储，不会被 ResearchEvolve 当代码执行；
-- `verified_natural_language` 不能宣传成 Lean / Coq / Isabelle formal proof。
+- subprocess JSON 协议不是 OS sandbox；
+- Lean elaboration/tactics 本身是可执行计算；
+- v0.6 source gate 是 defense in depth，不是完整隔离；
+- autonomous Formalizer 应把 Lean 放到独立 container / VM / remote worker；
+- Lean worker 不应拥有模型 API key、private evaluator 或其他敏感文件；
+- `formal_verified` 只对 frozen Lean theorem 有意义，informal-to-formal mapping 仍需审计。
 
 ---
 
 # 路线图
 
 ```text
-v0.1  ResearchSpec + Hidden Evaluator + Candidate DB + MAP-Elites + Mutation + Research Graph
-v0.2  Evaluator Cascade + Pareto + Novelty + Checkpoint + DomainPack + qLDPC
-v0.3  Explorer + Idea Genome + Semantic Mutation/Crossover + IdeaMemory
-v0.4  Observation + Conjecture + Counterexample + Empirical Refinement
-v0.5  ProofSpec + ProofPlan + Lemma DAG + Prover + Independent Adversarial Verifier
-v0.6  Formalizer + Lean / symbolic verification + proof repair
+v0.1  Research Harness
+v0.2  Evaluator Cascade + Pareto + Novelty + DomainPack
+v0.3  Explorer + Idea Genome + Semantic Evolution
+v0.4  Observation + Conjecture + Counterexample
+v0.5  ProofSpec + Lemma DAG + Prover + Independent NL Verifier
+v0.6  Frozen Formal Contract + Lean Kernel + Axiom Audit + Proof Repair
+v0.7  Formal Library Retrieval + Premise Selection + Lean Project/Mathlib Environment
 v1.0  Autonomous Mathematical Research Lab
 ```
 
-长期目标：
+下一阶段最值得做的不是再造更多 Agent，而是让 formal layer 能处理真正研究级数学库：
 
 ```text
-LLM creativity
-      +
-Evolutionary search
-      +
-Automated evaluation
-      +
-Empirical conjecture formation
-      +
-Counterexample attack
-      +
-Structured proof planning
-      +
-Independent natural-language verification
-      +
-Formal verification (later)
-      +
-Structured research memory
+Mathlib / project environment
+        +
+formal theorem retrieval
+        +
+premise selection
+        +
+lemma search
+        +
+formal proof repair
+        +
+multiple isolated Lean workers
 ```
+
+这样 ResearchEvolve 才能从 `formal42` 这种 reference benchmark 逐步走向真实组合数学、代数和 qLDPC 定理验证。
