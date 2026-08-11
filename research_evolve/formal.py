@@ -35,9 +35,9 @@ def _source_sha256(source: str) -> str:
 class FormalizationSpec:
     """Frozen machine-checkable target for one natural-language proof lineage.
 
-    The theorem signature/imports/toolchain come from a source ResearchSpec
-    formal contract. A Formalizer is only allowed to propose a proof term and
-    optional helper declarations; it cannot rewrite this target.
+    Imports, trusted preamble definitions, theorem signature, and toolchain come
+    from a source ResearchSpec formal contract. A Formalizer may only propose a
+    proof term plus optional helper declarations; it cannot rewrite the target.
     """
 
     proof_spec_id: str
@@ -47,6 +47,7 @@ class FormalizationSpec:
     theorem_name: str
     theorem_signature: str
     imports: list[str] = field(default_factory=list)
+    preamble: str = ""
     backend: str = "lean4"
     toolchain: str = "leanprover/lean4:v4.30.0"
     generation: int = 0
@@ -108,6 +109,10 @@ class FormalArtifact:
         chunks: list[str] = []
         if spec.imports:
             chunks.extend(f"import {module}" for module in spec.imports)
+            chunks.append("")
+        preamble = spec.preamble.strip()
+        if preamble:
+            chunks.append(preamble)
             chunks.append("")
         helper = self.helper_source.strip()
         if helper:
