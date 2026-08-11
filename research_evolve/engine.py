@@ -10,7 +10,9 @@ from .candidates import Candidate, CandidateDB
 from .checkpoint import CheckpointStore, SearchCheckpoint
 from .evaluation import EvaluatorCascade
 from .evolution import IslandPopulation, NoveltyArchive, ParetoArchive
+from .explorer import Explorer, ResearchContext
 from .graph import ResearchGraph, ResearchNode
+from .ideas import IdeaMemory, ResearchProposal, realize_proposal
 from .mutation import FourLevelMutator
 from .reproducibility import build_manifest, stable_json_hash, write_manifest
 from .spec import ResearchSpec
@@ -35,7 +37,7 @@ class RunSummary:
 
 
 class ResearchEngine:
-    """v0.2 discovery loop: mutate -> cascade-evaluate -> diversify -> archive -> checkpoint."""
+    """v0.3 loop: deterministic evolution + optional semantic Explorer proposals."""
 
     def __init__(
         self,
@@ -43,6 +45,7 @@ class ResearchEngine:
         workspace: str | Path = ".researchevolve/run",
         island_count: int = 4,
         mutator: FourLevelMutator | None = None,
+        explorer: Explorer | None = None,
     ) -> None:
         spec.validate()
         self.spec = spec
@@ -51,10 +54,12 @@ class ResearchEngine:
         self.rng = random.Random(spec.budget.seed)
         self.db = CandidateDB(self.workspace / "candidates.sqlite3")
         self.graph = ResearchGraph(self.workspace / "research_graph.sqlite3")
+        self.ideas = IdeaMemory(self.workspace / "ideas.sqlite3")
         self.population = IslandPopulation(island_count, spec.behavior_dimensions)
         self.pareto = ParetoArchive(spec.objectives)
         self.novelty = NoveltyArchive(spec.behavior_dimensions, k=spec.search.novelty_k)
         self.mutator = mutator or FourLevelMutator()
+        self.explorer = explorer
         self.checkpoints = CheckpointStore(self.workspace / "checkpoint.json")
         self.evaluated = 0
         self.valid = 0
@@ -100,7 +105,41 @@ class ResearchEngine:
         self.graph.add_node(result_node)
         self.graph.add_edge(candidate.id, "evaluated_as", result_node.id)
 
-    def _evaluate(self, candidate: Candidate, evaluator: EvaluatorCascade, island_index: int) -> None:
+    def _record_proposal(self, proposal: ResearchProposal, generation: int, status: str = "proposed", **extra: Any) -> None:
+        self.graph.add_node(
+            ResearchNode(
+                id=proposal.genome.id,
+                type="idea",
+                statement=f"{proposal.genome.construction} via {proposal.genome.representation}",
+                status="active" if status == "proposed" else status,
+                payload=proposal.genome.to_dict(),
+                created_at=proposal.created_at,
+            )
+        )
+        payload = proposal.to_dict()
+        payload["generation"] = generation
+        payload.update(extra)
+        self.graph.add_node(
+            ResearchNode(
+                id=proposal.id,
+                type="proposal",
+                statement=proposal.rationale or proposal.kind,
+                status=status,
+                payload=payload,
+                created_at=proposal.created_at,
+            )
+        )
+        self.graph.add_edge(proposal.genome.id, "proposed_as", proposal.id)
+        for parent_id in proposal.parent_ids:
+            self.graph.add_edge(parent_id, "inspired", proposal.id, {"kind": proposal.kind})
+
+    def _evaluate(
+        self,
+        candidate: Candidate,
+        evaluator: EvaluatorCascade,
+        island_index: int,
+        proposal: ResearchProposal | None = None,
+    ) -> None:
         result = evaluator.evaluate(candidate.payload)
         candidate.valid = result.valid
         candidate.score = result.score
@@ -113,12 +152,35 @@ class ResearchEngine:
         search_diagnostics["novelty"] = novelty_score
         candidate.diagnostics["search"] = search_diagnostics
 
+        if proposal is not None:
+            candidate.diagnostics["research"] = {
+                "proposal_id": proposal.id,
+                "idea_id": proposal.genome.id,
+                "proposal_kind": proposal.kind,
+                "confidence": proposal.confidence,
+            }
+
         self.evaluated += 1
         self.valid += int(result.valid)
         self._record_candidate(candidate)
         self.population.add(candidate, island_index)
         self.pareto.add(candidate)
         self.novelty.add(candidate)
+
+        if proposal is not None:
+            self.ideas.record_outcome(proposal.id, candidate.id, result.valid, result.score)
+            status = "accepted" if result.valid else "rejected"
+            self._record_proposal(
+                proposal,
+                candidate.generation,
+                status=status,
+                candidate_id=candidate.id,
+                valid=result.valid,
+                score=result.score,
+                metrics=result.metrics,
+            )
+            self.graph.add_edge(proposal.id, "realized_as", candidate.id)
+            self.graph.add_edge(candidate.id, "expresses", proposal.genome.id)
 
     def _resolve_candidates(self, candidate_ids: Iterable[str]) -> list[Candidate]:
         resolved: list[Candidate] = []
@@ -155,6 +217,124 @@ class ResearchEngine:
         self.checkpoints.save(checkpoint)
         self._save_frontier()
 
+    @staticmethod
+    def _novelty_value(candidate: Candidate) -> float:
+        search = candidate.diagnostics.get("search", {}) if isinstance(candidate.diagnostics, dict) else {}
+        try:
+            return float(search.get("novelty", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _candidate_snapshot(self, candidate: Candidate) -> dict[str, Any]:
+        return {
+            "id": candidate.id,
+            "generation": candidate.generation,
+            "payload": candidate.payload,
+            "score": candidate.score,
+            "metrics": candidate.metrics,
+            "behavior": candidate.behavior,
+            "novelty": self._novelty_value(candidate),
+            "idea_genome": self.ideas.genome_for_candidate(candidate.id),
+        }
+
+    def _build_research_context(self, generation: int) -> ResearchContext:
+        limit = self.spec.explorer.context_candidates
+        pool: list[Candidate] = []
+        pool.extend(self.db.best(limit))
+        pool.extend(self.pareto.candidates()[:limit])
+        novelty_ranked = sorted(self.novelty.members.values(), key=self._novelty_value, reverse=True)
+        pool.extend(novelty_ranked[:limit])
+
+        unique: list[Candidate] = []
+        seen: set[str] = set()
+        for candidate in pool:
+            if candidate.id in seen:
+                continue
+            seen.add(candidate.id)
+            unique.append(candidate)
+            if len(unique) >= limit:
+                break
+
+        return ResearchContext(
+            problem=self.spec.problem,
+            generation=generation,
+            objectives=[asdict(item) for item in self.spec.objectives],
+            constraints=[asdict(item) for item in self.spec.constraints],
+            candidates=[self._candidate_snapshot(candidate) for candidate in unique],
+            pareto=[self._candidate_snapshot(candidate) for candidate in self.pareto.candidates()[:limit]],
+            feedback=self.ideas.recent_feedback(self.spec.explorer.feedback_items),
+            metadata={
+                "domain": self.spec.domain,
+                "behavior_dimensions": list(self.spec.behavior_dimensions),
+                "instruction": (
+                    "Propose auditable semantic mutations/crossovers. Do not claim validity; "
+                    "every realized candidate will be independently evaluated."
+                ),
+            },
+        )
+
+    def _island_for_parent(self, candidate_id: str) -> int:
+        for index, island in enumerate(self.population.islands):
+            if any(candidate.id == candidate_id for candidate in island.archive.cells.values()):
+                return index
+        return self.rng.randrange(len(self.population.islands))
+
+    def _record_explorer_error(self, generation: int, message: str) -> None:
+        node = ResearchNode(
+            type="explorer_error",
+            statement=message[:240],
+            status="failed",
+            payload={"generation": generation, "explorer": getattr(self.explorer, "name", None), "error": message},
+        )
+        self.graph.add_node(node)
+        self.graph.add_edge(self.problem_node_id, "explorer_failed", node.id)
+
+    def _run_explorer(self, generation: int, evaluator: EvaluatorCascade) -> None:
+        if not self.spec.explorer.enabled or self.explorer is None:
+            return
+        if generation % self.spec.explorer.interval != 0:
+            return
+
+        context = self._build_research_context(generation)
+        allowed_ids = {str(item["id"]) for item in context.candidates}
+        allowed_ids.update(str(item["id"]) for item in context.pareto)
+        if not allowed_ids:
+            return
+
+        try:
+            proposals = self.explorer.propose(context, self.spec.explorer.proposals_per_interval)
+        except Exception as exc:  # Explorer failures should not invalidate the deterministic search run.
+            self._record_explorer_error(generation, str(exc))
+            return
+
+        for proposal in proposals[: self.spec.explorer.proposals_per_interval]:
+            self.ideas.record_proposal(proposal, generation)
+            self._record_proposal(proposal, generation)
+            unavailable = [parent_id for parent_id in proposal.parent_ids if parent_id not in allowed_ids]
+            if unavailable:
+                reason = f"proposal used parent ids outside the supplied research context: {unavailable}"
+                self.ideas.mark_invalid(proposal.id, reason)
+                self._record_proposal(proposal, generation, status="invalid", error=reason)
+                continue
+
+            parent_candidates = self._resolve_candidates(proposal.parent_ids)
+            parents = {candidate.id: candidate.payload for candidate in parent_candidates}
+            try:
+                payload = realize_proposal(proposal, parents)
+            except (TypeError, ValueError) as exc:
+                self.ideas.mark_invalid(proposal.id, str(exc))
+                self._record_proposal(proposal, generation, status="invalid", error=str(exc))
+                continue
+
+            child = Candidate(
+                payload=payload,
+                parent_ids=list(proposal.parent_ids),
+                mutation_level=f"semantic:{proposal.kind}",
+                generation=generation,
+            )
+            island_index = self._island_for_parent(proposal.parent_ids[0])
+            self._evaluate(child, evaluator, island_index, proposal=proposal)
+
     def run(
         self,
         seed_payloads: Iterable[dict[str, Any]],
@@ -163,6 +343,8 @@ class ResearchEngine:
         resume: bool = False,
         domain_pack: str | None = None,
     ) -> RunSummary:
+        if self.spec.explorer.enabled and self.explorer is None:
+            raise ValueError("ResearchSpec enables explorer proposals, but no Explorer was supplied")
         if isinstance(evaluator_paths, (str, Path)):
             paths = [Path(evaluator_paths)]
         else:
@@ -173,12 +355,14 @@ class ResearchEngine:
             raise ValueError("at least one seed payload is required")
 
         mutator_name = f"{self.mutator.__class__.__module__}:{self.mutator.__class__.__qualname__}"
+        explorer_name = self.explorer.name if self.explorer is not None else None
         manifest = build_manifest(
             self.spec,
             seeds,
             paths,
             mutator_name=mutator_name,
             domain_pack=domain_pack,
+            explorer_name=explorer_name,
         )
         manifest_fingerprint = str(manifest["fingerprint"])
         manifest_path = self.workspace / "manifest.json"
@@ -188,7 +372,7 @@ class ResearchEngine:
                 raise ValueError("--resume requested but checkpoint.json does not exist")
             checkpoint = self.checkpoints.load()
             if checkpoint.manifest_fingerprint != manifest_fingerprint:
-                raise ValueError("checkpoint inputs differ from the current spec/seeds/evaluators/mutator")
+                raise ValueError("checkpoint inputs differ from the current spec/seeds/evaluators/mutator/explorer")
             self._restore_checkpoint(checkpoint)
             start_generation = checkpoint.generation + 1
         else:
@@ -221,6 +405,8 @@ class ResearchEngine:
                 )
                 self._evaluate(child, evaluator, island_index)
 
+            self._run_explorer(generation, evaluator)
+
             if generation % self.spec.search.migration_interval == 0:
                 self.population.migrate(migrants_per_island=self.spec.search.migrants_per_island)
             generation_completed = generation
@@ -249,6 +435,7 @@ class ResearchEngine:
     def close(self) -> None:
         self.db.close()
         self.graph.close()
+        self.ideas.close()
 
     def __enter__(self) -> "ResearchEngine":
         return self
