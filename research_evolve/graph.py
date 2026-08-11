@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 
 def _utcnow() -> str:
@@ -95,6 +95,66 @@ class ResearchGraph:
             }
             for row in rows
         ]
+
+    def prune_after_generation(self, generation: int, candidate_ids: Iterable[str] = ()) -> list[str]:
+        """Remove graph artifacts newer than a restored checkpoint.
+
+        Generation-bearing nodes are removed directly. Evaluation nodes linked to
+        removed candidates and Idea nodes used only by removed proposals are also
+        removed so the graph does not expose partial-generation ghost results.
+        """
+
+        removable = {str(candidate_id) for candidate_id in candidate_ids}
+        rows = self.conn.execute("SELECT id, type, payload FROM nodes").fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            node_generation = payload.get("generation") if isinstance(payload, dict) else None
+            if isinstance(node_generation, int) and node_generation > generation:
+                removable.add(str(row["id"]))
+
+        if removable:
+            placeholders = ",".join("?" for _ in removable)
+            evaluation_rows = self.conn.execute(
+                f"SELECT target_id FROM edges WHERE relation = 'evaluated_as' AND source_id IN ({placeholders})",
+                tuple(removable),
+            ).fetchall()
+            removable.update(str(row["target_id"]) for row in evaluation_rows)
+
+        proposal_ids = {
+            node_id
+            for node_id in removable
+            if self.conn.execute("SELECT type FROM nodes WHERE id = ?", (node_id,)).fetchone() is not None
+            and self.conn.execute("SELECT type FROM nodes WHERE id = ?", (node_id,)).fetchone()[0] == "proposal"
+        }
+        if proposal_ids:
+            placeholders = ",".join("?" for _ in proposal_ids)
+            idea_rows = self.conn.execute(
+                f"SELECT DISTINCT source_id FROM edges WHERE relation = 'proposed_as' AND target_id IN ({placeholders})",
+                tuple(proposal_ids),
+            ).fetchall()
+            for row in idea_rows:
+                idea_id = str(row["source_id"])
+                remaining = self.conn.execute(
+                    "SELECT target_id FROM edges WHERE relation = 'proposed_as' AND source_id = ?",
+                    (idea_id,),
+                ).fetchall()
+                if all(str(edge["target_id"]) in removable for edge in remaining):
+                    removable.add(idea_id)
+
+        if not removable:
+            return []
+        placeholders = ",".join("?" for _ in removable)
+        params = tuple(removable)
+        self.conn.execute(
+            f"DELETE FROM edges WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders})",
+            params + params,
+        )
+        self.conn.execute(f"DELETE FROM nodes WHERE id IN ({placeholders})", params)
+        self.conn.commit()
+        return sorted(removable)
 
     def export(self) -> dict[str, list[dict[str, Any]]]:
         nodes = [dict(row) for row in self.conn.execute("SELECT * FROM nodes ORDER BY created_at")]
