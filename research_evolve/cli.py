@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .candidates import CandidateDB
+from .domain import DomainPack, load_domain_pack
 from .engine import ResearchEngine
 from .graph import ResearchGraph
 from .mutation import FourLevelMutator
@@ -31,6 +32,15 @@ def _load_mutator(path: str | None) -> FourLevelMutator | None:
     return instance
 
 
+def _load_pack(path: str | None) -> DomainPack | None:
+    if not path:
+        return None
+    try:
+        return load_domain_pack(path)
+    except (ImportError, AttributeError, TypeError, ValueError) as exc:
+        raise SystemExit(f"could not load domain pack: {exc}") from exc
+
+
 def _cmd_init(args: argparse.Namespace) -> int:
     template = {
         "name": "my-research-run",
@@ -41,6 +51,13 @@ def _cmd_init(args: argparse.Namespace) -> int:
         "constraints": [],
         "behavior_dimensions": ["representation"],
         "budget": {"generations": 20, "population_size": 32, "evaluator_timeout_seconds": 30, "seed": 0},
+        "search": {
+            "novelty_probability": 0.25,
+            "novelty_k": 5,
+            "migration_interval": 5,
+            "migrants_per_island": 1,
+            "checkpoint_interval": 1
+        },
         "metadata": {},
     }
     path = Path(args.output)
@@ -56,9 +73,24 @@ def _cmd_run(args: argparse.Namespace) -> int:
     seeds = _read_json(args.seeds)
     if not isinstance(seeds, list) or not all(isinstance(item, dict) for item in seeds):
         raise SystemExit("seeds must be a JSON list of objects")
-    mutator = _load_mutator(args.mutator)
+
+    pack = _load_pack(args.domain_pack)
+    if pack is not None:
+        seeds = [pack.prepare_seed(item) for item in seeds]
+    mutator = _load_mutator(args.mutator) or (pack.mutator() if pack is not None else None)
+    evaluator_paths = list(args.evaluator or [])
+    if not evaluator_paths and pack is not None:
+        evaluator_paths = [str(path) for path in pack.evaluator_paths()]
+    if not evaluator_paths:
+        raise SystemExit("provide at least one --evaluator or use --domain-pack")
+
     with ResearchEngine(spec, workspace=args.workspace, island_count=args.islands, mutator=mutator) as engine:
-        summary = engine.run(seeds, args.evaluator)
+        summary = engine.run(
+            seeds,
+            evaluator_paths,
+            resume=args.resume,
+            domain_pack=pack.name if pack is not None else None,
+        )
     print(json.dumps(summary.to_dict(), indent=2))
     return 0
 
@@ -87,8 +119,19 @@ def _cmd_graph(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_json_artifact(args: argparse.Namespace) -> int:
+    path = Path(args.workspace) / args.artifact
+    if not path.is_file():
+        raise SystemExit(f"artifact does not exist: {path}")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if args.limit is not None and isinstance(data, list):
+        data = data[: args.limit]
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="research-evolve", description="ResearchEvolve v0.1 research harness")
+    parser = argparse.ArgumentParser(prog="research-evolve", description="ResearchEvolve v0.2 research harness")
     sub = parser.add_subparsers(dest="command", required=True)
 
     init = sub.add_parser("init", help="write a ResearchSpec JSON template")
@@ -98,14 +141,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="run evolutionary mathematical search")
     run.add_argument("--spec", required=True)
-    run.add_argument("--evaluator", required=True)
+    run.add_argument("--evaluator", action="append", help="evaluator stage path; repeat to form a cheap-to-expensive cascade")
+    run.add_argument("--domain-pack", help="built-in name such as qldpc, or module:Class")
     run.add_argument("--seeds", required=True)
     run.add_argument("--workspace", default=".researchevolve/run")
     run.add_argument("--islands", type=int, default=4)
     run.add_argument("--mutator", help="optional custom mutator as module:Class")
+    run.add_argument("--resume", action="store_true", help="resume from the workspace generation checkpoint")
     run.set_defaults(func=_cmd_run)
 
-    inspect = sub.add_parser("inspect", help="show highest-scoring valid candidates")
+    inspect = sub.add_parser("inspect", help="show highest canonical-score valid candidates")
     inspect.add_argument("--workspace", default=".researchevolve/run")
     inspect.add_argument("--limit", type=int, default=10)
     inspect.set_defaults(func=_cmd_inspect)
@@ -114,6 +159,15 @@ def build_parser() -> argparse.ArgumentParser:
     graph.add_argument("--workspace", default=".researchevolve/run")
     graph.add_argument("--output")
     graph.set_defaults(func=_cmd_graph)
+
+    pareto = sub.add_parser("pareto", help="show the latest multi-objective Pareto frontier")
+    pareto.add_argument("--workspace", default=".researchevolve/run")
+    pareto.add_argument("--limit", type=int)
+    pareto.set_defaults(func=_cmd_json_artifact, artifact="pareto.json")
+
+    manifest = sub.add_parser("manifest", help="show the reproducibility manifest for a run")
+    manifest.add_argument("--workspace", default=".researchevolve/run")
+    manifest.set_defaults(func=_cmd_json_artifact, artifact="manifest.json", limit=None)
     return parser
 
 
