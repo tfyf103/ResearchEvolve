@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 from pathlib import Path
 from typing import Any
@@ -8,11 +9,26 @@ from typing import Any
 from .candidates import CandidateDB
 from .engine import ResearchEngine
 from .graph import ResearchGraph
+from .mutation import FourLevelMutator
 from .spec import ResearchSpec
 
 
 def _read_json(path: str | Path) -> Any:
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _load_mutator(path: str | None) -> FourLevelMutator | None:
+    if not path:
+        return None
+    if ":" not in path:
+        raise SystemExit("--mutator must use module:Class syntax")
+    module_name, class_name = path.split(":", 1)
+    module = importlib.import_module(module_name)
+    cls = getattr(module, class_name)
+    instance = cls()
+    if not hasattr(instance, "mutate") or not hasattr(instance, "sample_level"):
+        raise SystemExit("custom mutator must implement mutate() and sample_level()")
+    return instance
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
@@ -40,7 +56,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
     seeds = _read_json(args.seeds)
     if not isinstance(seeds, list) or not all(isinstance(item, dict) for item in seeds):
         raise SystemExit("seeds must be a JSON list of objects")
-    with ResearchEngine(spec, workspace=args.workspace, island_count=args.islands) as engine:
+    mutator = _load_mutator(args.mutator)
+    with ResearchEngine(spec, workspace=args.workspace, island_count=args.islands, mutator=mutator) as engine:
         summary = engine.run(seeds, args.evaluator)
     print(json.dumps(summary.to_dict(), indent=2))
     return 0
@@ -85,6 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--seeds", required=True)
     run.add_argument("--workspace", default=".researchevolve/run")
     run.add_argument("--islands", type=int, default=4)
+    run.add_argument("--mutator", help="optional custom mutator as module:Class")
     run.set_defaults(func=_cmd_run)
 
     inspect = sub.add_parser("inspect", help="show highest-scoring valid candidates")
