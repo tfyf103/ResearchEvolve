@@ -79,15 +79,18 @@ def gf2_rank(rows: Iterable[int]) -> int:
     return len(gf2_basis(rows))
 
 
-def in_rowspace(vector: int, rows: Iterable[int]) -> bool:
-    basis = gf2_basis(rows)
-    value = vector
+def reduce_with_basis(vector: int, basis: dict[int, int]) -> int:
+    value = int(vector)
     while value:
         pivot = value.bit_length() - 1
         if pivot not in basis:
-            return False
+            break
         value ^= basis[pivot]
-    return True
+    return value
+
+
+def in_rowspace(vector: int, rows: Iterable[int]) -> bool:
+    return reduce_with_basis(vector, gf2_basis(rows)) == 0
 
 
 def in_kernel(vector: int, parity_checks: Iterable[int]) -> bool:
@@ -110,9 +113,10 @@ def logical_distance(parity_checks: list[int], stabilizer_rows: list[int], n: in
     distance algorithm.
     """
 
+    stabilizer_basis = gf2_basis(stabilizer_rows)
     for weight in range(1, n + 1):
         for vector in _vectors_of_weight(n, weight):
-            if in_kernel(vector, parity_checks) and not in_rowspace(vector, stabilizer_rows):
+            if in_kernel(vector, parity_checks) and reduce_with_basis(vector, stabilizer_basis) != 0:
                 return weight
     return None
 
@@ -137,8 +141,9 @@ def code_parameters(candidate: dict[str, Any]) -> dict[str, float]:
 
 def exact_distance_metrics(candidate: dict[str, Any]) -> dict[str, float] | None:
     hx, hz, n = build_css_rows(candidate)
-    params = code_parameters(candidate)
-    if params["k"] <= 0:
+    rank_hx = gf2_rank(hx)
+    rank_hz = gf2_rank(hz)
+    if n - rank_hx - rank_hz <= 0:
         return None
     dx = logical_distance(hz, hx, n)
     dz = logical_distance(hx, hz, n)
