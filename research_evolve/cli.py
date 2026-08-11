@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from .candidates import CandidateDB
+from .conjecturer import CommandConjecturer
+from .conjectures import ConjectureMemory
 from .domain import DomainPack, load_domain_pack
 from .engine import ResearchEngine
 from .explorer import CommandExplorer
@@ -68,6 +70,17 @@ def _cmd_init(args: argparse.Namespace) -> int:
             "feedback_items": 12,
             "timeout_seconds": 60
         },
+        "conjecture": {
+            "enabled": False,
+            "interval": 1,
+            "observations_per_interval": 12,
+            "conjectures_per_interval": 2,
+            "context_candidates": 24,
+            "context_conjectures": 12,
+            "counterexample_trials": 8,
+            "min_evidence": 3,
+            "timeout_seconds": 60
+        },
         "metadata": {},
     }
     path = Path(args.output)
@@ -102,12 +115,21 @@ def _cmd_run(args: argparse.Namespace) -> int:
     elif spec.explorer.enabled:
         raise SystemExit("ResearchSpec enables explorer proposals; provide --explorer-command")
 
+    conjecturer = None
+    if args.conjecturer_command:
+        if not spec.conjecture.enabled:
+            raise SystemExit("--conjecturer-command requires conjecture.enabled=true in the ResearchSpec")
+        conjecturer = CommandConjecturer(args.conjecturer_command, timeout_seconds=spec.conjecture.timeout_seconds)
+    elif spec.conjecture.enabled:
+        raise SystemExit("ResearchSpec enables conjecture generation; provide --conjecturer-command")
+
     with ResearchEngine(
         spec,
         workspace=args.workspace,
         island_count=args.islands,
         mutator=mutator,
         explorer=explorer,
+        conjecturer=conjecturer,
     ) as engine:
         summary = engine.run(
             seeds,
@@ -164,8 +186,23 @@ def _cmd_idea_memory(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_conjecture_memory(args: argparse.Namespace) -> int:
+    memory = ConjectureMemory(Path(args.workspace) / "conjectures.sqlite3")
+    try:
+        if args.memory_kind == "observations":
+            data = memory.recent_observations(args.limit)
+        elif args.memory_kind == "conjectures":
+            data = memory.recent_conjectures(args.limit)
+        else:
+            data = memory.list_counterexamples(args.limit)
+    finally:
+        memory.close()
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="research-evolve", description="ResearchEvolve v0.3 research harness")
+    parser = argparse.ArgumentParser(prog="research-evolve", description="ResearchEvolve v0.4 research harness")
     sub = parser.add_subparsers(dest="command", required=True)
 
     init = sub.add_parser("init", help="write a ResearchSpec JSON template")
@@ -182,6 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--islands", type=int, default=4)
     run.add_argument("--mutator", help="optional custom mutator as module:Class")
     run.add_argument("--explorer-command", help="external Explorer command using the v0.3 JSON stdin/stdout protocol")
+    run.add_argument("--conjecturer-command", help="external Conjecturer command using the v0.4 JSON stdin/stdout protocol")
     run.add_argument("--resume", action="store_true", help="resume from the workspace generation checkpoint")
     run.set_defaults(func=_cmd_run)
 
@@ -213,6 +251,21 @@ def build_parser() -> argparse.ArgumentParser:
     proposals.add_argument("--workspace", default=".researchevolve/run")
     proposals.add_argument("--limit", type=int, default=20)
     proposals.set_defaults(func=_cmd_idea_memory, memory_kind="proposals")
+
+    observations = sub.add_parser("observations", help="show deterministic empirical observations")
+    observations.add_argument("--workspace", default=".researchevolve/run")
+    observations.add_argument("--limit", type=int, default=20)
+    observations.set_defaults(func=_cmd_conjecture_memory, memory_kind="observations")
+
+    conjectures = sub.add_parser("conjectures", help="show conjectures and empirical support/refutation status")
+    conjectures.add_argument("--workspace", default=".researchevolve/run")
+    conjectures.add_argument("--limit", type=int, default=20)
+    conjectures.set_defaults(func=_cmd_conjecture_memory, memory_kind="conjectures")
+
+    counterexamples = sub.add_parser("counterexamples", help="show verified empirical counterexamples")
+    counterexamples.add_argument("--workspace", default=".researchevolve/run")
+    counterexamples.add_argument("--limit", type=int, default=20)
+    counterexamples.set_defaults(func=_cmd_conjecture_memory, memory_kind="counterexamples")
     return parser
 
 
