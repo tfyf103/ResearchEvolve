@@ -15,6 +15,9 @@ from .explorer import CommandExplorer
 from .graph import ResearchGraph
 from .ideas import IdeaMemory
 from .mutation import FourLevelMutator
+from .proof_agents import CommandProofPlanner, CommandProofVerifier, CommandProver
+from .proof_pipeline import ProofPipeline
+from .proofs import ProofMemory
 from .spec import ResearchSpec
 
 
@@ -141,6 +144,28 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_prove(args: argparse.Namespace) -> int:
+    planner = CommandProofPlanner(args.planner_command, timeout_seconds=args.timeout)
+    prover = CommandProver(args.prover_command, timeout_seconds=args.timeout)
+    verifier = CommandProofVerifier(args.verifier_command, timeout_seconds=args.timeout)
+    try:
+        with ProofPipeline(
+            args.workspace,
+            planner,
+            prover,
+            verifier,
+            max_conjectures=args.max_conjectures,
+            max_lemmas=args.max_lemmas,
+            evidence_context=args.evidence_context,
+            min_verifier_confidence=args.min_verifier_confidence,
+        ) as pipeline:
+            summary = pipeline.run()
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps(summary.to_dict(), indent=2, ensure_ascii=False))
+    return 0
+
+
 def _cmd_inspect(args: argparse.Namespace) -> int:
     db = CandidateDB(Path(args.workspace) / "candidates.sqlite3")
     try:
@@ -201,8 +226,25 @@ def _cmd_conjecture_memory(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_proof_memory(args: argparse.Namespace) -> int:
+    memory = ProofMemory(Path(args.workspace) / "proofs.sqlite3")
+    try:
+        if args.memory_kind == "specs":
+            data = memory.list_specs(args.limit)
+        elif args.memory_kind == "plans":
+            data = memory.list_plans(args.limit)
+        elif args.memory_kind == "artifacts":
+            data = memory.list_artifacts(args.limit)
+        else:
+            data = memory.list_reviews(args.limit)
+    finally:
+        memory.close()
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="research-evolve", description="ResearchEvolve v0.4 research harness")
+    parser = argparse.ArgumentParser(prog="research-evolve", description="ResearchEvolve v0.5 research harness")
     sub = parser.add_subparsers(dest="command", required=True)
 
     init = sub.add_parser("init", help="write a ResearchSpec JSON template")
@@ -223,6 +265,18 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--resume", action="store_true", help="resume from the workspace generation checkpoint")
     run.set_defaults(func=_cmd_run)
 
+    prove = sub.add_parser("prove", help="run the v0.5 proof planner/prover/independent-verifier pipeline")
+    prove.add_argument("--workspace", default=".researchevolve/run")
+    prove.add_argument("--planner-command", required=True)
+    prove.add_argument("--prover-command", required=True)
+    prove.add_argument("--verifier-command", required=True)
+    prove.add_argument("--timeout", type=float, default=60.0)
+    prove.add_argument("--max-conjectures", type=int, default=4)
+    prove.add_argument("--max-lemmas", type=int, default=24)
+    prove.add_argument("--evidence-context", type=int, default=24)
+    prove.add_argument("--min-verifier-confidence", type=float, default=0.7)
+    prove.set_defaults(func=_cmd_prove)
+
     inspect = sub.add_parser("inspect", help="show highest canonical-score valid candidates")
     inspect.add_argument("--workspace", default=".researchevolve/run")
     inspect.add_argument("--limit", type=int, default=10)
@@ -241,6 +295,10 @@ def build_parser() -> argparse.ArgumentParser:
     manifest = sub.add_parser("manifest", help="show the reproducibility manifest for a run")
     manifest.add_argument("--workspace", default=".researchevolve/run")
     manifest.set_defaults(func=_cmd_json_artifact, artifact="manifest.json", limit=None)
+
+    proof_manifest = sub.add_parser("proof-manifest", help="show the v0.5 proof pipeline manifest")
+    proof_manifest.add_argument("--workspace", default=".researchevolve/run")
+    proof_manifest.set_defaults(func=_cmd_json_artifact, artifact="proof_manifest.json", limit=None)
 
     ideas = sub.add_parser("ideas", help="show recent structured Idea Genomes")
     ideas.add_argument("--workspace", default=".researchevolve/run")
@@ -266,6 +324,17 @@ def build_parser() -> argparse.ArgumentParser:
     counterexamples.add_argument("--workspace", default=".researchevolve/run")
     counterexamples.add_argument("--limit", type=int, default=20)
     counterexamples.set_defaults(func=_cmd_conjecture_memory, memory_kind="counterexamples")
+
+    for command, help_text, memory_kind in [
+        ("proof-specs", "show frozen proof target specifications", "specs"),
+        ("proof-plans", "show lemma decomposition plans", "plans"),
+        ("proof-artifacts", "show natural-language proof artifacts", "artifacts"),
+        ("proof-reviews", "show independent adversarial proof reviews", "reviews"),
+    ]:
+        proof_memory = sub.add_parser(command, help=help_text)
+        proof_memory.add_argument("--workspace", default=".researchevolve/run")
+        proof_memory.add_argument("--limit", type=int, default=20)
+        proof_memory.set_defaults(func=_cmd_proof_memory, memory_kind=memory_kind)
     return parser
 
 
