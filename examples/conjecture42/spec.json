@@ -1,0 +1,41 @@
+{
+  "name": "conjecture-42-demo",
+  "problem": "Search near x=42, summarize empirical observations, form testable conjectures, and attack them with counterexamples.",
+  "domain": "generic",
+  "mode": "hybrid",
+  "objectives": [
+    {"name": "distance_to_42", "direction": "minimize", "weight": 1.0}
+  ],
+  "constraints": [],
+  "behavior_dimensions": ["representation"],
+  "budget": {
+    "generations": 1,
+    "population_size": 1,
+    "evaluator_timeout_seconds": 10,
+    "seed": 11
+  },
+  "search": {
+    "novelty_probability": 0.25,
+    "novelty_k": 3,
+    "migration_interval": 2,
+    "migrants_per_island": 1,
+    "checkpoint_interval": 1
+  },
+  "explorer": {
+    "enabled": false
+  },
+  "conjecture": {
+    "enabled": true,
+    "interval": 1,
+    "observations_per_interval": 8,
+    "conjectures_per_interval": 2,
+    "context_candidates": 8,
+    "context_conjectures": 8,
+    "counterexample_trials": 2,
+    "min_evidence": 2,
+    "timeout_seconds": 10
+  },
+  "metadata": {
+    "purpose": "v0.4 observation-conjecture-counterexample protocol smoke test"
+  }
+}
