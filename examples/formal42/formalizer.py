@@ -1,8 +1,8 @@
 """Deterministic v0.6 Formalizer demo.
 
-The first proof term is deliberately wrong so CI exercises the Lean diagnostic
-and repair loop. The theorem signature itself is supplied by the frozen formal
-contract and cannot be changed here.
+The first proof term is deliberately ill-typed so CI exercises the real Lean
+diagnostic and repair loop. The theorem signature itself is supplied by the
+frozen formal contract and cannot be changed here.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ def main() -> int:
     print(
         json.dumps(
             {
-                "proof_term": "by exact Nat.le_refl _",
+                "proof_term": "by exact 0",
                 "helper_source": "",
                 "metadata": {
                     "provider": "deterministic-demo",
