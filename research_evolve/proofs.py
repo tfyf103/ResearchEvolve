@@ -28,12 +28,7 @@ def _utcnow() -> str:
 
 @dataclass(slots=True)
 class ProofSpec:
-    """Frozen target contract for one proof attempt.
-
-    A ProofSpec is derived from an empirically supported Conjecture. It records
-    exactly what statement/predicate is being argued so a prover cannot silently
-    change the theorem during the proof attempt.
-    """
+    """Frozen target contract for one proof attempt."""
 
     conjecture_id: str
     statement: str
@@ -228,12 +223,6 @@ class ProofReview:
             issue.validate()
 
     def gated_status(self, min_confidence: float = 0.7) -> ProofStatus:
-        """Convert an external review into a deterministic ResearchEvolve status.
-
-        A model cannot force a verified result if it also reports an error or if
-        confidence is below the configured threshold.
-        """
-
         self.validate()
         if self.decision == "rejected" or any(issue.severity == "error" for issue in self.issues):
             return "rejected"
@@ -377,9 +366,20 @@ class ProofMemory:
         return status
 
     def mark_spec_invalid(self, proof_spec_id: str) -> None:
+        artifact_rows = self.conn.execute(
+            "SELECT id FROM proof_artifacts WHERE proof_spec_id = ?",
+            (proof_spec_id,),
+        ).fetchall()
+        artifact_ids = [str(row["id"]) for row in artifact_rows]
         self.conn.execute("UPDATE proof_specs SET status = 'invalid' WHERE id = ?", (proof_spec_id,))
         self.conn.execute("UPDATE proof_plans SET status = 'invalid' WHERE proof_spec_id = ?", (proof_spec_id,))
         self.conn.execute("UPDATE proof_artifacts SET status = 'invalid' WHERE proof_spec_id = ?", (proof_spec_id,))
+        if artifact_ids:
+            placeholders = ",".join("?" for _ in artifact_ids)
+            self.conn.execute(
+                f"UPDATE proof_reviews SET gated_status = 'invalid' WHERE proof_artifact_id IN ({placeholders})",
+                tuple(artifact_ids),
+            )
         self.conn.commit()
 
     def invalidate_conjecture_proofs(self, conjecture_id: str, reason: str) -> int:
@@ -399,9 +399,22 @@ class ProofMemory:
                 (json.dumps(payload, sort_keys=True), row["id"]),
             )
             proof_spec_ids.append(str(row["id"]))
+
+        artifact_ids: list[str] = []
         for proof_spec_id in proof_spec_ids:
+            artifact_rows = self.conn.execute(
+                "SELECT id FROM proof_artifacts WHERE proof_spec_id = ?",
+                (proof_spec_id,),
+            ).fetchall()
+            artifact_ids.extend(str(row["id"]) for row in artifact_rows)
             self.conn.execute("UPDATE proof_plans SET status = 'invalid' WHERE proof_spec_id = ?", (proof_spec_id,))
             self.conn.execute("UPDATE proof_artifacts SET status = 'invalid' WHERE proof_spec_id = ?", (proof_spec_id,))
+        if artifact_ids:
+            placeholders = ",".join("?" for _ in artifact_ids)
+            self.conn.execute(
+                f"UPDATE proof_reviews SET gated_status = 'invalid' WHERE proof_artifact_id IN ({placeholders})",
+                tuple(artifact_ids),
+            )
         self.conn.commit()
         return len(proof_spec_ids)
 
