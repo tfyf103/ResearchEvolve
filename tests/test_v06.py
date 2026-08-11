@@ -16,6 +16,7 @@ from research_evolve.proofs import LemmaSpec, ProofArtifact, ProofMemory, ProofP
 
 
 CONJECTURE_STATEMENT = "Synthetic distance is always non-negative."
+EXPECTED_TOOLCHAIN = "leanprover/lean4:v4.30.0"
 
 
 def _write_fake_lean(path: Path, version: str = "4.30.0") -> None:
@@ -23,7 +24,10 @@ def _write_fake_lean(path: Path, version: str = "4.30.0") -> None:
         "\n".join(
             [
                 "from __future__ import annotations",
-                "import pathlib, sys",
+                "import os, pathlib, sys",
+                f"if os.environ.get('ELAN_TOOLCHAIN') != {EXPECTED_TOOLCHAIN!r}:",
+                "    print('missing frozen ELAN_TOOLCHAIN', file=sys.stderr)",
+                "    raise SystemExit(2)",
                 "if '--version' in sys.argv:",
                 f"    print('Lean (version {version}, fake-test-kernel)')",
                 "    raise SystemExit(0)",
@@ -40,13 +44,24 @@ def _write_fake_lean(path: Path, version: str = "4.30.0") -> None:
     )
 
 
-def _prepare_workspace(tmp_path: Path, *, include_contract: bool = True, preamble: str = "") -> tuple[Path, str, str]:
+def _prepare_workspace(
+    tmp_path: Path,
+    *,
+    include_contract: bool = True,
+    preamble: str = "",
+    contract_predicate_operator: str = "ge",
+) -> tuple[Path, str, str]:
     workspace = tmp_path / "run"
     workspace.mkdir()
     contract = {
         "conjecture_statement": CONJECTURE_STATEMENT,
+        "conjecture_predicate": {
+            "left": {"source": "metrics", "key": "distance"},
+            "operator": contract_predicate_operator,
+            "right_constant": 0,
+        },
         "backend": "lean4",
-        "toolchain": "leanprover/lean4:v4.30.0",
+        "toolchain": EXPECTED_TOOLCHAIN,
         "theorem_name": "metric_nonnegative",
         "theorem_signature": "theorem metric_nonnegative (d : Nat) : 0 ≤ d",
         "imports": [],
@@ -159,7 +174,7 @@ class BadThenRepairFormalizer:
     name = "formalizer-test-v1"
 
     def formalize(self, context: FormalContext, spec: FormalizationSpec) -> FormalArtifact:
-        return FormalArtifact(formal_spec_id=spec.id, proof_term="by exact Nat.le_refl _")
+        return FormalArtifact(formal_spec_id=spec.id, proof_term="by exact 0")
 
 
 class Repairer:
@@ -190,7 +205,7 @@ def _spec(**overrides) -> FormalizationSpec:
         "conjecture_statement": "statement",
         "theorem_name": "metric_nonnegative",
         "theorem_signature": "theorem metric_nonnegative (d : Nat) : 0 ≤ d",
-        "toolchain": "leanprover/lean4:v4.30.0",
+        "toolchain": EXPECTED_TOOLCHAIN,
     }
     data.update(overrides)
     return FormalizationSpec(**data)
@@ -205,8 +220,7 @@ def test_formal_spec_rejects_actor_owned_proof_body() -> None:
 def test_kernel_rejects_sorry_without_running_lean(tmp_path: Path) -> None:
     spec = _spec()
     artifact = FormalArtifact(formal_spec_id=spec.id, proof_term="by sorry")
-    kernel = LeanKernel("definitely-not-a-real-lean-command")
-    result, _ = kernel.verify(spec, artifact, workspace=tmp_path)
+    result, _ = LeanKernel("definitely-not-a-real-lean-command").verify(spec, artifact, workspace=tmp_path)
     assert result.status == "kernel_rejected"
     assert result.gate_reason == "forbidden-token:sorry"
 
@@ -218,8 +232,7 @@ def test_kernel_rejects_untrusted_top_level_helper(tmp_path: Path) -> None:
         proof_term="by exact Nat.zero_le _",
         helper_source="theorem helper : True := by trivial",
     )
-    kernel = LeanKernel("definitely-not-a-real-lean-command")
-    result, _ = kernel.verify(spec, artifact, workspace=tmp_path)
+    result, _ = LeanKernel("definitely-not-a-real-lean-command").verify(spec, artifact, workspace=tmp_path)
     assert result.status == "kernel_rejected"
     assert result.gate_reason == "untrusted-top-level-helper"
 
@@ -229,10 +242,18 @@ def test_kernel_requires_frozen_toolchain_version(tmp_path: Path) -> None:
     _write_fake_lean(fake, version="4.29.0")
     spec = _spec()
     artifact = FormalArtifact(formal_spec_id=spec.id, proof_term="by exact Nat.zero_le _")
-    kernel = LeanKernel(["python", str(fake)])
-    result, _ = kernel.verify(spec, artifact, workspace=tmp_path)
+    result, _ = LeanKernel(["python", str(fake)]).verify(spec, artifact, workspace=tmp_path)
     assert result.status == "environment_error"
     assert result.gate_reason == "toolchain-version-mismatch"
+
+
+def test_kernel_forces_toolchain_env_in_temp_workdir(tmp_path: Path) -> None:
+    fake = tmp_path / "fake_lean.py"
+    _write_fake_lean(fake)
+    spec = _spec()
+    artifact = FormalArtifact(formal_spec_id=spec.id, proof_term="by exact Nat.zero_le _")
+    result, _ = LeanKernel(["python", str(fake)]).verify(spec, artifact, workspace=tmp_path)
+    assert result.status == "formal_verified"
 
 
 def test_formal_pipeline_repairs_then_kernel_verifies(tmp_path: Path) -> None:
@@ -240,13 +261,7 @@ def test_formal_pipeline_repairs_then_kernel_verifies(tmp_path: Path) -> None:
     fake = tmp_path / "fake_lean.py"
     _write_fake_lean(fake)
     kernel = LeanKernel(["python", str(fake)])
-    with FormalPipeline(
-        workspace,
-        BadThenRepairFormalizer(),
-        kernel,
-        Repairer(),
-        max_repairs=2,
-    ) as pipeline:
+    with FormalPipeline(workspace, BadThenRepairFormalizer(), kernel, Repairer(), max_repairs=2) as pipeline:
         summary = pipeline.run()
     assert summary.attempted_formalizations == 1
     assert summary.formal_verified == 1
@@ -258,6 +273,7 @@ def test_formal_pipeline_repairs_then_kernel_verifies(tmp_path: Path) -> None:
     memory.close()
     assert specs[0]["proof_spec_id"] == proof_spec_id
     assert specs[0]["status"] == "formal_verified"
+    assert specs[0]["metadata"]["frozen_conjecture_predicate"]["operator"] == "ge"
     assert len(artifacts) == 2
     assert any(item["status"] == "formal_verified" for item in artifacts)
     assert len(runs) == 2
@@ -299,6 +315,16 @@ def test_missing_contract_does_not_let_formalizer_choose_target(tmp_path: Path) 
     assert summary.missing_contract == 1
     assert summary.attempted_formalizations == 0
     assert summary.formal_verified == 0
+
+
+def test_same_statement_different_predicate_does_not_reuse_contract(tmp_path: Path) -> None:
+    workspace, _, _ = _prepare_workspace(tmp_path, contract_predicate_operator="gt")
+    fake = tmp_path / "fake_lean.py"
+    _write_fake_lean(fake)
+    with FormalPipeline(workspace, GoodFormalizer(), LeanKernel(["python", str(fake)])) as pipeline:
+        summary = pipeline.run()
+    assert summary.missing_contract == 1
+    assert summary.attempted_formalizations == 0
 
 
 def test_stale_natural_language_proof_invalidates_formal_lineage(tmp_path: Path) -> None:
