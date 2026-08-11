@@ -21,6 +21,7 @@ FormalStatus = Literal[
     "invalidated",
 ]
 DiagnosticSeverity = Literal["error", "warning", "info"]
+DEFAULT_ALLOWED_LEAN_AXIOMS = ["propext", "Classical.choice", "Quot.sound"]
 
 
 def _utcnow() -> str:
@@ -35,9 +36,9 @@ def _source_sha256(source: str) -> str:
 class FormalizationSpec:
     """Frozen machine-checkable target for one natural-language proof lineage.
 
-    Imports, trusted preamble definitions, theorem signature, and toolchain come
-    from a source ResearchSpec formal contract. A Formalizer may only propose a
-    proof term plus optional helper declarations; it cannot rewrite the target.
+    Imports, trusted preamble definitions, theorem signature, toolchain, and the
+    allowed axiom set come from a source ResearchSpec formal contract. A
+    Formalizer may only propose a proof term; it cannot rewrite the target.
     """
 
     proof_spec_id: str
@@ -48,6 +49,7 @@ class FormalizationSpec:
     theorem_signature: str
     imports: list[str] = field(default_factory=list)
     preamble: str = ""
+    allowed_axioms: list[str] = field(default_factory=lambda: list(DEFAULT_ALLOWED_LEAN_AXIOMS))
     backend: str = "lean4"
     toolchain: str = "leanprover/lean4:v4.30.0"
     generation: int = 0
@@ -76,6 +78,11 @@ class FormalizationSpec:
         for module in self.imports:
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.]*", module):
                 raise ValueError(f"invalid Lean import module: {module!r}")
+        if len(set(self.allowed_axioms)) != len(self.allowed_axioms):
+            raise ValueError("allowed_axioms must be unique")
+        for axiom in self.allowed_axioms:
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_'.]*", axiom):
+                raise ValueError(f"invalid Lean axiom identifier: {axiom!r}")
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
@@ -153,6 +160,7 @@ class KernelResult:
     stdout: str = ""
     stderr: str = ""
     diagnostics: list[LeanDiagnostic] = field(default_factory=list)
+    axioms: list[str] = field(default_factory=list)
     gate_reason: str = ""
     source_sha256: str = ""
     id: str = field(default_factory=lambda: f"kernel-run-{uuid.uuid4().hex}")
