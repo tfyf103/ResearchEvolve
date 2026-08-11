@@ -2,70 +2,61 @@
 
 > **A research harness for AI-driven mathematical discovery.**
 >
-> ResearchEvolve 把 **LLM 创造性、演化搜索、自动评测、经验猜想、反例攻击、自然语言证明与独立验证** 放进一个可审计的科研执行环境里。
+> ResearchEvolve 把 **LLM 创造性、演化搜索、自动评测、经验猜想、反例攻击、自然语言证明与独立验证** 放进一个可审计、可恢复、可复现的科研执行环境。
 
 当前版本：**v0.5.0**
 
-## 项目定位
+## 核心思想
 
-ResearchEvolve 不是一个巨大 Prompt，也不是固定的多 Agent 聊天室。它是一套把“提出想法”和“决定真假”分开的研究基础设施：
+ResearchEvolve 不让一个模型同时扮演“提出想法、评测、证明、宣布正确”的全部角色，而是把研究过程拆成彼此可审计的可信边界：
 
 ```text
-                              ResearchSpec
-                                   │
-                 ┌─────────────────┼─────────────────┐
-                 ▼                 ▼                 ▼
-        Four-level Mutation   Explorer / LLM    Observation
-                 │                 │                 │
-                 │          Research Proposal        ▼
-                 │                 │            Conjecturer
-                 │            Idea Genome            │
-                 │                 │             Conjecture
-                 │       Semantic Mutation/          │
-                 │            Crossover              ▼
-                 │                 │          Counterexample Search
-                 └────────────┬────┘                 │
-                              ▼                      │
-                          Candidate ◄────────────────┘
-                              │
-                              ▼
-                      Evaluator Cascade
-                              │
-              ┌───────────────┼───────────────┐
-              ▼               ▼               ▼
-         MAP-Elites        Pareto          Novelty
-          + Islands        Archive         Archive
-              │               │               │
-              └───────────────┼───────────────┘
-                              ▼
-                       Candidate DB
-                              │
-                       Research Graph
-                    ┌─────────┴──────────┐
-                    ▼                    ▼
-               IdeaMemory         ConjectureMemory
-                                         │
-                                         ▼
-                                  Proof Pipeline
-                              ┌──────────┼──────────┐
-                              ▼          ▼          ▼
-                         ProofPlan    Prover    Verifier
-                              └──────────┼──────────┘
-                                         ▼
-                                   ProofMemory
+ResearchSpec
+    │
+    ├── Four-level Mutation ─────────────┐
+    │                                    │
+    ├── Explorer → Idea Genome ──────────┤
+    │                                    ▼
+    │                                Candidate
+    │                                    │
+    │                            Evaluator Cascade
+    │                                    │
+    │                   MAP-Elites / Pareto / Novelty
+    │                                    │
+    └── Observation → Conjecture ─────────┤
+                         │                │
+                         ▼                │
+                 Counterexample Search ◄──┘
+                         │
+                         ▼
+              empirically_supported
+                         │
+                         ▼
+                   Proof Pipeline
+      ProofSpec → ProofPlan → Lemma DAG → Prover
+                                      │
+                                      ▼
+                           Independent Verifier
+                                      │
+                                      ▼
+                         verified_natural_language
 ```
 
-## 核心原则
+### 不可跨越的状态边界
 
-1. **LLM 不拥有最终裁决权。** Explorer、Conjecturer、Prover 都不能单方面宣布结果正确。
-2. **有限实验不是证明。** v0.4 只有 `empirically_supported`，没有 `proved`。
-3. **自然语言验证也不是形式化证明。** v0.5 的最高状态是 `verified_natural_language`。
-4. **先找反例，再花证明预算。** ProofPipeline 会先扫描所有已经独立评测过的 Candidate。
-5. **Verifier 与 Prover 必须独立。** Command adapter 会按底层脚本/命令内容计算 role-independent implementation identity。
-6. **不要只保留 Top-K。** MAP-Elites、islands、Pareto 和 novelty 共同保护不同研究路线。
-7. **昂贵验证分层。** Evaluator Cascade 从便宜到昂贵短路无效候选。
-8. **研究过程必须可恢复、可追踪。** Candidate、Idea、Observation、Conjecture、Counterexample、ProofPlan、Lemma、ProofArtifact、ProofReview 都有持久化 lineage。
-9. **模型供应商可替换。** 外部 command adapter 可以包装 OpenAI、Claude、Gemini、本地模型或确定性程序。
+```text
+有限实验通过
+    ≠ theorem proved
+
+LLM 写出证明
+    ≠ proof verified
+
+独立自然语言 verifier 接受
+    = verified_natural_language
+    ≠ formal_verified
+```
+
+真正的 `formal_verified` 留给后续 Lean / Coq / Isabelle / kernel checking。
 
 ---
 
@@ -76,34 +67,29 @@ ResearchEvolve 不是一个巨大 Prompt，也不是固定的多 Agent 聊天室
 - `ResearchSpec`
 - process-separated Hidden Evaluator protocol
 - SQLite `CandidateDB`
-- MAP-Elites
-- island populations + migration
+- MAP-Elites + island populations
 - 四层 Mutation：Local / Structural / Algebraic / Representation
 - persistent `ResearchGraph`
-- CLI 与 target42 demo
 
 ## v0.2 — Search Quality & Reproducibility
 
 - Evaluator Cascade
-- multi-objective Pareto Archive
-- Novelty Archive + novelty-biased parent selection
+- Pareto Archive
+- Novelty Archive
 - Checkpoint / Resume
 - reproducibility `manifest.json`
-- formal `DomainPack` interface
-- built-in qLDPC reference benchmark
+- `DomainPack`
+- qLDPC reference benchmark
 - GitHub Actions CI
 
 ## v0.3 — Semantic Research Explorer
 
-- provider-neutral `Explorer` protocol
-- external `CommandExplorer`
-- structured `ResearchProposal`
-- persistent `IdeaGenome`
-- restricted `SemanticPatch`
+- provider-neutral `Explorer`
+- `CommandExplorer`
+- `ResearchProposal`
+- `IdeaGenome`
 - semantic mutation / crossover
-- `IdeaMemory` feedback loop
-- Idea → Proposal → Candidate lineage
-- Explorer failure isolation
+- persistent `IdeaMemory`
 
 详细设计：[`docs/V0.3.md`](docs/V0.3.md)
 
@@ -111,32 +97,30 @@ ResearchEvolve 不是一个巨大 Prompt，也不是固定的多 Agent 聊天室
 
 - deterministic `ObservationExtractor`
 - provider-neutral `Conjecturer`
-- external `CommandConjecturer`
 - safe machine-testable `Predicate` DSL
 - archive-first + mutation-driven Counterexample Search
 - persistent `ConjectureMemory`
 - conjecture refinement lineage
-- explicit `proposed / empirically_supported / refuted / invalid` statuses
-- resume-safe empirical test journal
+- `proposed / empirically_supported / refuted / invalid`
 
 详细设计：[`docs/V0.4.md`](docs/V0.4.md)
 
 ## v0.5 — Proof Planner → Prover → Independent Verifier
 
 - frozen `ProofSpec`
+- explicit proof assumptions / definitions
 - structured `ProofPlan`
-- validated acyclic `LemmaSpec` dependency graph
+- acyclic `LemmaSpec` dependency graph
 - structured `ProofArtifact`
-- provider-neutral `ProofPlanner / Prover / ProofVerifier` protocols
-- `CommandProofPlanner / CommandProver / CommandProofVerifier`
-- deterministic proof preflight over all valid CandidateDB entries
-- hidden-assumption check against the frozen ProofSpec
-- independent verifier implementation check
-- deterministic review gate: verifier errors override a claimed `verified`
-- `verified_natural_language / rejected / inconclusive / invalid` proof statuses
+- provider-neutral Planner / Prover / Verifier interfaces
+- CandidateDB proof preflight
+- hidden-assumption rejection
+- Prover / Verifier implementation-separation check
+- deterministic verifier gate
+- stale-proof invalidation when a later counterexample appears
 - persistent `ProofMemory`
 - independent `proof_manifest.json`
-- proof lineage in Research Graph
+- proof lineage in `ResearchGraph`
 
 详细设计：[`docs/V0.5.md`](docs/V0.5.md)
 
@@ -162,7 +146,7 @@ Windows PowerShell：
 .venv\Scripts\Activate.ps1
 ```
 
-安装与测试：
+安装：
 
 ```bash
 pip install -e ".[dev]"
@@ -171,7 +155,9 @@ pytest -q
 
 ---
 
-# Demo 1：target42 — 基础 Evolutionary Harness
+# Demo 1：target42
+
+验证最基础的 evolutionary research loop：
 
 ```bash
 research-evolve run \
@@ -188,14 +174,11 @@ research-evolve run \
 research-evolve inspect --workspace .researchevolve/target42 --limit 10
 research-evolve pareto --workspace .researchevolve/target42
 research-evolve manifest --workspace .researchevolve/target42
-research-evolve graph --workspace .researchevolve/target42 --output target42-graph.json
 ```
 
 ---
 
 # Demo 2：qLDPC Domain Pack
-
-v0.2 内置一个**纯 Python、小规模、正确性优先**的 circulant bicycle/CSS benchmark：
 
 ```bash
 research-evolve run \
@@ -206,34 +189,21 @@ research-evolve run \
   --islands 4
 ```
 
-Evaluator Cascade：
+当前内置 benchmark 是纯 Python、小规模、正确性优先的 circulant bicycle/CSS pipeline：
 
 ```text
-Candidate
-   ↓
 constraints + CSS commutation
-   ↓
+        ↓
 GF(2) rank → n, k, rate, row weight
-   ↓
+        ↓
 exact small-code distance enumeration
 ```
 
-> 当前 exact distance 只用于 `size <= 7` 的集成 benchmark，不是生产级 qLDPC distance solver。未来可以替换/扩展成 BP、BP-OSD、OSD-CS、MILP，而无需改通用 Research Engine。
-
-领域化四层 mutation：
-
-```text
-Local           少量 circulant shift 修改
-Structural      shift 数量 / 小规模结构变化
-Algebraic       modular affine / unit transform
-Representation  circulant ↔ polynomial
-```
+> exact distance 当前只用于 `size <= 7` 的集成 benchmark，不是生产级 qLDPC distance solver。后续可以替换为 BP、BP-OSD、OSD-CS、MILP，而无需改通用 Research Engine。
 
 ---
 
-# Demo 3：semantic42 — Explorer / Idea Genome
-
-无需 API key：
+# Demo 3：semantic42
 
 ```bash
 research-evolve run \
@@ -254,9 +224,7 @@ research-evolve proposals --workspace .researchevolve/semantic42
 
 ---
 
-# Demo 4：conjecture42 — Observation / Conjecture / Counterexample
-
-无需 API key：
+# Demo 4：conjecture42
 
 ```bash
 research-evolve run \
@@ -276,25 +244,45 @@ research-evolve conjectures --workspace .researchevolve/conjecture42
 research-evolve counterexamples --workspace .researchevolve/conjecture42
 ```
 
-Demo 故意提出一个错误猜想 `score < 0`，已有 `x=42` candidate 会把它 refute；另一个 `distance_to_42 >= 0` 在有限测试中可以进入 `empirically_supported`，但不会被标成 proved。
+Demo 中：
+
+- `score < 0` 会被 `x=42, score=0` 反驳；
+- `distance_to_42 >= 0` 会在有限证据下变成 `empirically_supported`；
+- v0.4 不会把它标成 proved。
 
 ---
 
-# Demo 5：proof42 — ProofSpec / Lemma Graph / Independent Verifier
+# Demo 5：proof42
 
-v0.5 证明阶段运行在一个已经完成的 research workspace 上。先生成 v0.4 猜想：
+v0.5 证明阶段是一个**独立的 post-research phase**。
+
+## Step 1：先完成发现 / 猜想阶段
+
+proof42 使用专用 ResearchSpec，因为其中显式声明了证明所需的距离定义：
+
+```json
+{
+  "metadata": {
+    "proof_assumptions": [
+      "For every evaluated numeric candidate x, distance_to_42 is defined as abs(x - 42)."
+    ]
+  }
+}
+```
+
+运行：
 
 ```bash
 research-evolve run \
-  --spec examples/conjecture42/spec.json \
+  --spec examples/proof42/spec.json \
   --evaluator examples/target42/evaluator.py \
-  --seeds examples/conjecture42/seeds.json \
+  --seeds examples/proof42/seeds.json \
   --conjecturer-command "python examples/conjecture42/conjecturer.py" \
   --workspace .researchevolve/proof42 \
   --islands 2
 ```
 
-然后运行 proof pipeline：
+## Step 2：运行 Proof Pipeline
 
 ```bash
 research-evolve prove \
@@ -307,7 +295,7 @@ research-evolve prove \
   --min-verifier-confidence 0.7
 ```
 
-查看：
+## Step 3：检查证明链
 
 ```bash
 research-evolve proof-specs --workspace .researchevolve/proof42
@@ -317,129 +305,163 @@ research-evolve proof-reviews --workspace .researchevolve/proof42
 research-evolve proof-manifest --workspace .researchevolve/proof42
 ```
 
-`proof42` 使用三个不同的确定性脚本模拟 Planner、Prover、Verifier，因此 CI 不需要任何 API key。
-
 预期链路：
 
 ```text
 Empirically Supported Conjecture
               │
               ▼
-      scan CandidateDB again
+     scan every valid CandidateDB row
               │
-              ▼
-           ProofSpec
-              │
-              ▼
-           ProofPlan
-              │
-      ┌───────┼───────┐
-      ▼       ▼       ▼
-    Lemma A Lemma B Lemma C
-      └───────┼───────┘
-              ▼
-         ProofArtifact
-              │
-              ▼
-     Independent Verifier
-              │
-              ▼
- verified_natural_language
+       counterexample?
+        ┌─────┴─────┐
+       yes          no
+        ▼            ▼
+     refuted      ProofSpec
+                      │
+                      ▼
+                  ProofPlan
+                      │
+               Lemma DAG
+                      │
+                      ▼
+                 ProofArtifact
+                      │
+                      ▼
+            Independent Verifier
+                      │
+                      ▼
+          verified_natural_language
 ```
 
 ---
 
-# v0.4 Predicate DSL
+# v0.5：ProofSpec 为什么必须冻结 assumptions
 
-Conjecturer 必须把猜想写成机器可测试 predicate：
+一个数学证明经常依赖：
+
+- 定义；
+- 归一化约定；
+- 问题硬约束；
+- 已明确给定的公理或领域前提。
+
+这些不能由 Prover 自己临时补出来。
+
+ResearchEvolve v0.5 把两类前提冻结进 `ProofSpec.assumptions`：
+
+1. `ResearchSpec.constraints` 中的 hard constraints；
+2. `ResearchSpec.metadata.proof_assumptions` 中显式声明的定义 / 公理。
+
+例如：
 
 ```json
 {
-  "statement": "distance is non-negative",
-  "predicate": {
-    "left": {"source": "metrics", "key": "distance"},
-    "operator": "ge",
-    "right_constant": 0
+  "metadata": {
+    "proof_assumptions": [
+      "Hx * Hz^T = 0 over GF(2) by the construction definition.",
+      "The group operation is taken modulo l."
+    ]
   }
 }
 ```
 
-可引用：
+Prover 返回：
 
-```text
-score
-payload.<key>
-metrics.<key>
-behavior.<key>
+```json
+{
+  "assumptions_used": [
+    "The group operation is taken modulo l."
+  ]
+}
 ```
 
-比较：
+如果它使用了 ProofSpec 中不存在的前提，artifact 会在进入 Verifier 之前直接 `invalid`。
 
-```text
-lt  le  gt  ge  eq  ne
-```
-
-不支持任意 Python 表达式，也不会调用 `eval` / `exec`。
+> `proof_assumptions` 是显式研究输入，不是系统替你证明的事实。对真实论文工作，应确保这些前提本身来自问题定义、已验证构造或可引用的定理。
 
 ---
 
-# v0.5 Proof Pipeline 可信边界
+# v0.5：Verifier gate
 
-## 1. Frozen ProofSpec
-
-ProofSpec 固定：
+Verifier 的原始输出：
 
 ```text
-conjecture_id
-statement
-predicate
-assumptions
-evidence_candidate_ids
-source generation
+verified | rejected | inconclusive
 ```
 
-Planner/Prover 不能通过修改目标来“证明更容易的命题”。
-
-## 2. Lemma DAG
-
-ProofPlan 的 lemma 必须：
+ResearchEvolve 再做确定性 gate：
 
 ```text
-label unique
-statement non-empty
-dependency exists
-no self dependency
-no cycle
-within max_lemmas
+verifier says rejected
+    → rejected
+
+any VerificationIssue.severity == error
+    → rejected
+
+verified + confidence < threshold
+    → inconclusive
+
+verified + no error + confidence >= threshold
+    → verified_natural_language
 ```
 
-## 3. ProofArtifact structural checks
-
-Prover 必须为每个 planned lemma 给出 argument，并给出 final argument。声明使用的 assumption 必须来自 ProofSpec。
-
-## 4. Independent verifier
-
-Verifier 与 Prover 的 command implementation identity 必须不同。
-
-Verifier 返回 `verified` 也不是无条件接受：
-
-```text
-any error issue → rejected
-verified + confidence < threshold → inconclusive
-verified + no error + confidence >= threshold → verified_natural_language
-```
-
-## 5. 不等于形式化证明
-
-`verified_natural_language` 只表示：
-
-> 自然语言证明经过结构检查，并被独立 adversarial verifier 接受。
-
-它**不等于** Lean / Coq / Isabelle / proof-kernel verification。
+如果 Verifier 进程崩溃，ResearchEvolve 会写入一个 synthetic `inconclusive` review，而不会把 artifact 留在一个容易被误读的“drafted but maybe verified”状态。
 
 ---
 
-# 持久化产物
+# Prover / Verifier 独立性
+
+Command actors 有两种身份：
+
+```text
+config identity
+    用于 manifest / 审计，包含角色和完整命令配置
+
+independence identity
+    用于判断是否同一个底层实现
+```
+
+因此即使：
+
+```bash
+python same_wrapper.py --role prover
+python same_wrapper.py --role verifier
+```
+
+只要它们指向同一个 wrapper 实现，v0.5 仍会拒绝这种“自证”。
+
+生产环境最好进一步使用：
+
+- 不同模型；
+- 不同系统提示；
+- 不同 worker；
+- 不同供应商；
+- 或最终使用 proof assistant kernel。
+
+---
+
+# Stale proof invalidation
+
+自然语言验证不是永久真理标签。
+
+每次 `research-evolve prove` 都会先重新扫描所有已经独立评测过的 valid candidates。
+
+如果一个过去 `verified_natural_language` 的猜想后来被新 Candidate 反驳：
+
+```text
+Conjecture → refuted
+ProofSpec → invalid
+ProofPlan → invalid
+Lemma nodes → invalid
+ProofArtifact → invalid
+ProofReview → invalid
+```
+
+原始 verifier decision 仍然保存在 proof journal 中用于审计，但 gated status 会失效。
+
+---
+
+# 持久化文件
 
 一个完整 v0.5 workspace 可能包含：
 
@@ -467,80 +489,70 @@ proof_artifacts
 proof_reviews
 ```
 
-证明阶段有独立 `proof_manifest.json`，不会修改 source research run 的 manifest/checkpoint。
+`proof_manifest.json` 独立记录：
+
+- source research-run fingerprint；
+- Planner / Prover / Verifier identities；
+- Prover / Verifier independence keys；
+- lemma / evidence budgets；
+- verifier confidence threshold。
+
+Proof 阶段不会修改 source `manifest.json` 或 `checkpoint.json`。
 
 ---
 
 # Research Graph
 
-到 v0.5，图谱覆盖：
+到 v0.5，新增节点：
 
 ```text
-Problem
-├── Candidate
-│   ├── Evaluation
-│   ├── Idea / Proposal lineage
-│   └── Counterexample
-├── Observation
-├── Conjecture
-└── ProofSpec
-    └── ProofPlan
-        ├── Lemma
-        ├── Lemma
-        └── Lemma
-             │
-             ▼
-        ProofArtifact
-             │
-             ▼
-         ProofReview
+ProofSpec
+ProofPlan
+Lemma
+ProofArtifact
+ProofReview
+ProofActorError
 ```
 
-v0.5 新关系包括：
+典型 lineage：
 
 ```text
-targets_conjecture
-plans_for
-decomposes_into
-depends_on
-implements_plan
-claims_proof_of
-reviews
-supports_natural_language_proof_of
-rejects_proof_for
-proof_actor_failed
+Conjecture
+    ▲
+    │ targets_conjecture
+ProofSpec
+    ▲
+    │ plans_for
+ProofPlan
+    │
+    ├── decomposes_into → Lemma A
+    ├── decomposes_into → Lemma B
+    └── decomposes_into → Lemma C
+
+ProofArtifact
+    ├── implements_plan → ProofPlan
+    └── claims_proof_of → ProofSpec
+
+ProofReview
+    ├── reviews → ProofArtifact
+    └── supports_natural_language_proof_of → Conjecture
 ```
 
-注意使用 `claims_proof_of` 而不是直接 `proves`：未验证 artifact 不应被 Research Graph 当作 theorem。
-
----
-
-# Checkpoint / Resume
-
-Evolutionary research 仍然使用：
-
-```bash
-research-evolve run ... --resume
-```
-
-恢复会对 CandidateDB、IdeaMemory、ConjectureMemory、Research Graph 和 archive 做 generation-consistent 清理与恢复。
-
-v0.5 proof pipeline 是 source run 之后的独立阶段，不参与 `checkpoint.json`。这样 proof model 的非确定性不会改变 source evolution 的可恢复性。
+这里故意叫 `claims_proof_of`，因为未验证 artifact 不应被当作 theorem。
 
 ---
 
 # 安全边界
 
-详细见 [`SECURITY.md`](SECURITY.md)。
+详见 [`SECURITY.md`](SECURITY.md)。
 
 简要说：
 
-- Evaluator subprocess 是协议边界，不是强安全沙箱。
-- CommandExplorer / CommandConjecturer / Proof command actors 也是协议边界，不是强沙箱。
-- 生产环境应该把 Agent、Evaluator、Prover、Verifier 分容器、VM 或远程 worker。
-- v0.4 Predicate DSL 不执行任意模型生成代码。
-- v0.5 ProofArtifact 只作为结构化文本保存，不会由 ResearchEvolve 当代码执行。
-- `verified_natural_language` 不能宣传成形式化证明。
+- Evaluator、Explorer、Conjecturer、Proof command actors 都只是协议边界，不是强沙箱；
+- 生产环境应该隔离 Agent、Private Grader、Prover、Verifier；
+- v0.4 Predicate DSL 不执行任意模型代码；
+- v0.5 ProofArtifact 作为结构化文本存储，不会被 ResearchEvolve 当代码执行；
+- `verified_natural_language` 不能宣传成 Lean / Coq / Isabelle formal proof。
 
 ---
 
@@ -556,7 +568,7 @@ v0.6  Formalizer + Lean / symbolic verification + proof repair
 v1.0  Autonomous Mathematical Research Lab
 ```
 
-长期目标是构建：
+长期目标：
 
 ```text
 LLM creativity
@@ -571,11 +583,9 @@ Counterexample attack
       +
 Structured proof planning
       +
-Independent verification
+Independent natural-language verification
       +
 Formal verification (later)
       +
 Structured research memory
 ```
-
-让数学研究从一次回答，变成一个可以持续搜索、积累、失败、修正、验证和复现的过程。
