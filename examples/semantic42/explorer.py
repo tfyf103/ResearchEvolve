@@ -10,6 +10,11 @@ import json
 import sys
 
 
+def _score(item: dict) -> float:
+    value = item.get("score")
+    return -1e30 if value is None else float(value)
+
+
 def main() -> int:
     request = json.load(sys.stdin)
     count = max(0, int(request.get("count", 1)))
@@ -19,7 +24,7 @@ def main() -> int:
         print(json.dumps({"proposals": []}))
         return 0
 
-    parent = max(candidates, key=lambda item: float(item.get("score") or -1e30))
+    parent = max(candidates, key=_score)
     parent_id = str(parent["id"])
     proposals = []
     targets = [42, 41]
