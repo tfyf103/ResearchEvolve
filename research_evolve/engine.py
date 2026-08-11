@@ -194,6 +194,7 @@ class ResearchEngine:
         self.evaluated = checkpoint.evaluated
         self.valid = checkpoint.valid
         self.rng.setstate(checkpoint.rng_state)
+        self.ideas.prune_after_generation(checkpoint.generation)
         islands = [self._resolve_candidates(candidate_ids) for candidate_ids in checkpoint.island_candidate_ids]
         self.population.restore(islands)
         self.pareto.restore(self._resolve_candidates(checkpoint.pareto_candidate_ids))
@@ -240,7 +241,7 @@ class ResearchEngine:
     def _build_research_context(self, generation: int) -> ResearchContext:
         limit = self.spec.explorer.context_candidates
         pool: list[Candidate] = []
-        pool.extend(self.db.best(limit))
+        pool.extend(self.population.global_elites()[:limit])
         pool.extend(self.pareto.candidates()[:limit])
         novelty_ranked = sorted(self.novelty.members.values(), key=self._novelty_value, reverse=True)
         pool.extend(novelty_ranked[:limit])
