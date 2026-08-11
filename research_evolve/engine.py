@@ -8,6 +8,8 @@ from typing import Any, Iterable
 
 from .candidates import Candidate, CandidateDB
 from .checkpoint import CheckpointStore, SearchCheckpoint
+from .conjecturer import ConjectureContext, Conjecturer
+from .conjectures import Conjecture, ConjectureMemory, Counterexample, Observation, ObservationExtractor
 from .evaluation import EvaluatorCascade
 from .evolution import IslandPopulation, NoveltyArchive, ParetoArchive
 from .explorer import Explorer, ResearchContext
@@ -29,6 +31,11 @@ class RunSummary:
     best_candidate_id: str | None
     best_score: float | None
     best_payload: dict[str, Any] | None
+    observation_count: int
+    conjecture_count: int
+    empirically_supported_conjectures: int
+    refuted_conjectures: int
+    counterexample_count: int
     manifest_fingerprint: str
     workspace: str
 
@@ -37,7 +44,7 @@ class RunSummary:
 
 
 class ResearchEngine:
-    """v0.3 loop: deterministic evolution + optional semantic Explorer proposals."""
+    """v0.4: evolution + semantic exploration + empirical conjecture/counterexample loop."""
 
     def __init__(
         self,
@@ -46,6 +53,7 @@ class ResearchEngine:
         island_count: int = 4,
         mutator: FourLevelMutator | None = None,
         explorer: Explorer | None = None,
+        conjecturer: Conjecturer | None = None,
     ) -> None:
         spec.validate()
         self.spec = spec
@@ -55,11 +63,14 @@ class ResearchEngine:
         self.db = CandidateDB(self.workspace / "candidates.sqlite3")
         self.graph = ResearchGraph(self.workspace / "research_graph.sqlite3")
         self.ideas = IdeaMemory(self.workspace / "ideas.sqlite3")
+        self.conjectures = ConjectureMemory(self.workspace / "conjectures.sqlite3")
+        self.observation_extractor = ObservationExtractor()
         self.population = IslandPopulation(island_count, spec.behavior_dimensions)
         self.pareto = ParetoArchive(spec.objectives)
         self.novelty = NoveltyArchive(spec.behavior_dimensions, k=spec.search.novelty_k)
         self.mutator = mutator or FourLevelMutator()
         self.explorer = explorer
+        self.conjecturer = conjecturer
         self.checkpoints = CheckpointStore(self.workspace / "checkpoint.json")
         self.evaluated = 0
         self.valid = 0
@@ -133,6 +144,59 @@ class ResearchEngine:
         for parent_id in proposal.parent_ids:
             self.graph.add_edge(parent_id, "inspired", proposal.id, {"kind": proposal.kind})
 
+    def _record_observation(self, observation: Observation) -> None:
+        self.graph.add_node(
+            ResearchNode(
+                id=observation.id,
+                type="observation",
+                statement=observation.statement,
+                status="observed",
+                payload=observation.to_dict(),
+                created_at=observation.created_at,
+            )
+        )
+        self.graph.add_edge(self.problem_node_id, "has_observation", observation.id)
+        for candidate_id in observation.evidence_candidate_ids:
+            self.graph.add_edge(observation.id, "derived_from", candidate_id)
+
+    def _record_conjecture(self, conjecture: Conjecture, generation: int, status: str | None = None, **extra: Any) -> None:
+        payload = conjecture.to_dict()
+        payload["generation"] = generation
+        payload.update(extra)
+        node_status = status or conjecture.status
+        self.graph.add_node(
+            ResearchNode(
+                id=conjecture.id,
+                type="conjecture",
+                statement=conjecture.statement,
+                status=node_status,
+                payload=payload,
+                created_at=conjecture.created_at,
+            )
+        )
+        self.graph.add_edge(self.problem_node_id, "has_conjecture", conjecture.id)
+        for observation_id in conjecture.observation_ids:
+            self.graph.add_edge(observation_id, "suggests", conjecture.id)
+        for parent_id in conjecture.parent_conjecture_ids:
+            self.graph.add_edge(parent_id, "refined_into", conjecture.id)
+        for candidate_id in conjecture.evidence_candidate_ids:
+            self.graph.add_edge(candidate_id, "evidence_for", conjecture.id)
+
+    def _record_counterexample(self, counterexample: Counterexample) -> None:
+        self.graph.add_node(
+            ResearchNode(
+                id=counterexample.id,
+                type="counterexample",
+                statement=f"Candidate {counterexample.candidate_id[:8]} refutes {counterexample.conjecture_id[:24]}",
+                status="verified",
+                payload=counterexample.to_dict(),
+                created_at=counterexample.created_at,
+            )
+        )
+        self.graph.add_edge(counterexample.candidate_id, "refutes", counterexample.conjecture_id)
+        self.graph.add_edge(counterexample.candidate_id, "instantiated_as", counterexample.id)
+        self.graph.add_edge(counterexample.id, "counterexample_to", counterexample.conjecture_id)
+
     def _evaluate(
         self,
         candidate: Candidate,
@@ -190,11 +254,30 @@ class ResearchEngine:
                 resolved.append(candidate)
         return resolved
 
+    def _sync_conjecture_graph_from_memory(self) -> None:
+        for record in self.conjectures.recent_conjectures(100000):
+            conjecture = Conjecture.from_dict(record)
+            conjecture.status = record["status"]  # type: ignore[assignment]
+            self._record_conjecture(
+                conjecture,
+                int(record["generation"]),
+                status=str(record["status"]),
+                tests=int(record["tests"]),
+                supports=int(record["supports"]),
+            )
+
     def _restore_checkpoint(self, checkpoint: SearchCheckpoint) -> None:
         self.evaluated = checkpoint.evaluated
         self.valid = checkpoint.valid
         self.rng.setstate(checkpoint.rng_state)
+        removed_candidate_ids = self.db.prune_after_generation(checkpoint.generation)
         self.ideas.prune_after_generation(checkpoint.generation)
+        self.conjectures.prune_after_generation(
+            checkpoint.generation,
+            min_evidence=self.spec.conjecture.min_evidence,
+        )
+        self.graph.prune_after_generation(checkpoint.generation, candidate_ids=removed_candidate_ids)
+        self._sync_conjecture_graph_from_memory()
         islands = [self._resolve_candidates(candidate_ids) for candidate_ids in checkpoint.island_candidate_ids]
         self.population.restore(islands)
         self.pareto.restore(self._resolve_candidates(checkpoint.pareto_candidate_ids))
@@ -238,24 +321,26 @@ class ResearchEngine:
             "idea_genome": self.ideas.genome_for_candidate(candidate.id),
         }
 
-    def _build_research_context(self, generation: int) -> ResearchContext:
-        limit = self.spec.explorer.context_candidates
+    def _archive_candidate_pool(self, limit: int) -> list[Candidate]:
         pool: list[Candidate] = []
         pool.extend(self.population.global_elites()[:limit])
         pool.extend(self.pareto.candidates()[:limit])
         novelty_ranked = sorted(self.novelty.members.values(), key=self._novelty_value, reverse=True)
         pool.extend(novelty_ranked[:limit])
-
         unique: list[Candidate] = []
         seen: set[str] = set()
         for candidate in pool:
-            if candidate.id in seen:
+            if candidate.id in seen or not candidate.valid:
                 continue
             seen.add(candidate.id)
             unique.append(candidate)
             if len(unique) >= limit:
                 break
+        return unique
 
+    def _build_research_context(self, generation: int) -> ResearchContext:
+        limit = self.spec.explorer.context_candidates
+        unique = self._archive_candidate_pool(limit)
         return ResearchContext(
             problem=self.spec.problem,
             generation=generation,
@@ -280,15 +365,15 @@ class ResearchEngine:
                 return index
         return self.rng.randrange(len(self.population.islands))
 
-    def _record_explorer_error(self, generation: int, message: str) -> None:
+    def _record_external_error(self, node_type: str, relation: str, generation: int, actor: Any, message: str) -> None:
         node = ResearchNode(
-            type="explorer_error",
+            type=node_type,
             statement=message[:240],
             status="failed",
-            payload={"generation": generation, "explorer": getattr(self.explorer, "name", None), "error": message},
+            payload={"generation": generation, "actor": getattr(actor, "name", None), "error": message},
         )
         self.graph.add_node(node)
-        self.graph.add_edge(self.problem_node_id, "explorer_failed", node.id)
+        self.graph.add_edge(self.problem_node_id, relation, node.id)
 
     def _run_explorer(self, generation: int, evaluator: EvaluatorCascade) -> None:
         if not self.spec.explorer.enabled or self.explorer is None:
@@ -304,8 +389,8 @@ class ResearchEngine:
 
         try:
             proposals = self.explorer.propose(context, self.spec.explorer.proposals_per_interval)
-        except Exception as exc:  # Explorer failures should not invalidate the deterministic search run.
-            self._record_explorer_error(generation, str(exc))
+        except Exception as exc:
+            self._record_external_error("explorer_error", "explorer_failed", generation, self.explorer, str(exc))
             return
 
         for proposal in proposals[: self.spec.explorer.proposals_per_interval]:
@@ -336,6 +421,170 @@ class ResearchEngine:
             island_index = self._island_for_parent(proposal.parent_ids[0])
             self._evaluate(child, evaluator, island_index, proposal=proposal)
 
+    def _build_conjecture_context(self, generation: int, observations: list[dict[str, Any]]) -> ConjectureContext:
+        candidates = self._archive_candidate_pool(self.spec.conjecture.context_candidates)
+        return ConjectureContext(
+            problem=self.spec.problem,
+            generation=generation,
+            objectives=[asdict(item) for item in self.spec.objectives],
+            constraints=[asdict(item) for item in self.spec.constraints],
+            observations=observations,
+            candidates=[self._candidate_snapshot(candidate) for candidate in candidates],
+            conjectures=self.conjectures.recent_conjectures(self.spec.conjecture.context_conjectures),
+            metadata={
+                "domain": self.spec.domain,
+                "truth_policy": (
+                    "Finite experiments can only support or refute a conjecture. Never label a conjecture proved."
+                ),
+            },
+        )
+
+    def _test_candidate_against_conjecture(
+        self,
+        conjecture: Conjecture,
+        candidate: Candidate,
+        generation: int,
+        source: str,
+    ) -> Counterexample | None:
+        if not candidate.valid:
+            return None
+        supported = conjecture.predicate.evaluate(candidate)
+        if supported is None:
+            return None
+        self.conjectures.record_test(conjecture.id, candidate.id, generation, supported, source)
+        if supported:
+            return None
+        counterexample = Counterexample(
+            conjecture_id=conjecture.id,
+            candidate_id=candidate.id,
+            generation=generation,
+            source=source,
+            payload=dict(candidate.payload),
+            metrics=dict(candidate.metrics),
+            score=candidate.score,
+        )
+        self.conjectures.record_counterexample(counterexample)
+        self._record_counterexample(counterexample)
+        return counterexample
+
+    def _retest_active_conjectures(self, generation: int, candidate_pool: list[Candidate]) -> None:
+        records = self.conjectures.recent_conjectures(self.spec.conjecture.context_conjectures)
+        for record in records:
+            if record["status"] not in {"proposed", "empirically_supported"}:
+                continue
+            conjecture = Conjecture.from_dict(record)
+            conjecture.status = record["status"]  # type: ignore[assignment]
+            for candidate in candidate_pool:
+                if self._test_candidate_against_conjecture(
+                    conjecture,
+                    candidate,
+                    generation,
+                    "archive_retest",
+                ) is not None:
+                    break
+            status = self.conjectures.refresh_status(conjecture.id, self.spec.conjecture.min_evidence)
+            conjecture.status = status  # type: ignore[assignment]
+            self._record_conjecture(
+                conjecture,
+                int(record["generation"]),
+                status=status,
+                retested_generation=generation,
+            )
+
+    def _counterexample_search(
+        self,
+        conjecture: Conjecture,
+        generation: int,
+        evaluator: EvaluatorCascade,
+    ) -> str:
+        scan_candidates = self._archive_candidate_pool(self.spec.conjecture.context_candidates)
+        for candidate in scan_candidates:
+            if self._test_candidate_against_conjecture(conjecture, candidate, generation, "archive") is not None:
+                return self.conjectures.refresh_status(conjecture.id, self.spec.conjecture.min_evidence)
+
+        for _ in range(self.spec.conjecture.counterexample_trials):
+            selected = self.population.sample_parent(
+                self.rng,
+                novelty_probability=self.spec.search.novelty_probability,
+            )
+            if selected is None:
+                break
+            island_index, parent = selected
+            level = self.mutator.sample_level(self.rng)
+            payload = self.mutator.mutate(parent.payload, level, self.rng)
+            child = Candidate(
+                payload=payload,
+                parent_ids=[parent.id],
+                mutation_level=f"counterexample:{level.value}",
+                generation=generation,
+            )
+            self._evaluate(child, evaluator, island_index)
+            if self._test_candidate_against_conjecture(
+                conjecture,
+                child,
+                generation,
+                "counterexample_search",
+            ) is not None:
+                return self.conjectures.refresh_status(conjecture.id, self.spec.conjecture.min_evidence)
+
+        return self.conjectures.refresh_status(conjecture.id, self.spec.conjecture.min_evidence)
+
+    def _run_conjecture_loop(self, generation: int, evaluator: EvaluatorCascade) -> None:
+        if not self.spec.conjecture.enabled or self.conjecturer is None:
+            return
+        if generation % self.spec.conjecture.interval != 0:
+            return
+
+        candidate_pool = self._archive_candidate_pool(self.spec.conjecture.context_candidates)
+        self._retest_active_conjectures(generation, candidate_pool)
+
+        observations = self.observation_extractor.extract(
+            candidate_pool,
+            generation,
+            limit=self.spec.conjecture.observations_per_interval,
+        )
+        for observation in observations:
+            self.conjectures.record_observation(observation)
+            self._record_observation(observation)
+
+        observation_context = self.conjectures.recent_observations(self.spec.conjecture.observations_per_interval)
+        context = self._build_conjecture_context(generation, observation_context)
+        allowed_observations = {str(item["id"]) for item in context.observations}
+        allowed_candidates = {str(item["id"]) for item in context.candidates}
+        allowed_conjectures = {str(item["id"]) for item in context.conjectures}
+
+        try:
+            proposed = self.conjecturer.propose(context, self.spec.conjecture.conjectures_per_interval)
+        except Exception as exc:
+            self._record_external_error(
+                "conjecturer_error",
+                "conjecturer_failed",
+                generation,
+                self.conjecturer,
+                str(exc),
+            )
+            return
+
+        for conjecture in proposed[: self.spec.conjecture.conjectures_per_interval]:
+            self.conjectures.record_conjecture(conjecture, generation)
+            self._record_conjecture(conjecture, generation)
+
+            bad_observations = [item for item in conjecture.observation_ids if item not in allowed_observations]
+            bad_evidence = [item for item in conjecture.evidence_candidate_ids if item not in allowed_candidates]
+            bad_parents = [item for item in conjecture.parent_conjecture_ids if item not in allowed_conjectures]
+            if bad_observations or bad_evidence or bad_parents:
+                reason = (
+                    f"conjecture references context-external ids: observations={bad_observations}, "
+                    f"evidence={bad_evidence}, parents={bad_parents}"
+                )
+                self.conjectures.mark_invalid(conjecture.id, reason)
+                self._record_conjecture(conjecture, generation, status="invalid", error=reason)
+                continue
+
+            status = self._counterexample_search(conjecture, generation, evaluator)
+            conjecture.status = status  # type: ignore[assignment]
+            self._record_conjecture(conjecture, generation, status=status)
+
     def run(
         self,
         seed_payloads: Iterable[dict[str, Any]],
@@ -346,6 +595,8 @@ class ResearchEngine:
     ) -> RunSummary:
         if self.spec.explorer.enabled and self.explorer is None:
             raise ValueError("ResearchSpec enables explorer proposals, but no Explorer was supplied")
+        if self.spec.conjecture.enabled and self.conjecturer is None:
+            raise ValueError("ResearchSpec enables conjecture generation, but no Conjecturer was supplied")
         if isinstance(evaluator_paths, (str, Path)):
             paths = [Path(evaluator_paths)]
         else:
@@ -357,6 +608,7 @@ class ResearchEngine:
 
         mutator_name = f"{self.mutator.__class__.__module__}:{self.mutator.__class__.__qualname__}"
         explorer_name = self.explorer.name if self.explorer is not None else None
+        conjecturer_name = self.conjecturer.name if self.conjecturer is not None else None
         manifest = build_manifest(
             self.spec,
             seeds,
@@ -364,6 +616,7 @@ class ResearchEngine:
             mutator_name=mutator_name,
             domain_pack=domain_pack,
             explorer_name=explorer_name,
+            conjecturer_name=conjecturer_name,
         )
         manifest_fingerprint = str(manifest["fingerprint"])
         manifest_path = self.workspace / "manifest.json"
@@ -373,7 +626,9 @@ class ResearchEngine:
                 raise ValueError("--resume requested but checkpoint.json does not exist")
             checkpoint = self.checkpoints.load()
             if checkpoint.manifest_fingerprint != manifest_fingerprint:
-                raise ValueError("checkpoint inputs differ from the current spec/seeds/evaluators/mutator/explorer")
+                raise ValueError(
+                    "checkpoint inputs differ from the current spec/seeds/evaluators/mutator/explorer/conjecturer"
+                )
             self._restore_checkpoint(checkpoint)
             start_generation = checkpoint.generation + 1
         else:
@@ -407,6 +662,7 @@ class ResearchEngine:
                 self._evaluate(child, evaluator, island_index)
 
             self._run_explorer(generation, evaluator)
+            self._run_conjecture_loop(generation, evaluator)
 
             if generation % self.spec.search.migration_interval == 0:
                 self.population.migrate(migrants_per_island=self.spec.search.migrants_per_island)
@@ -417,6 +673,7 @@ class ResearchEngine:
         self._save_checkpoint(generation_completed, manifest_fingerprint)
         elites = self.population.global_elites()
         best = elites[0] if elites else None
+        conjecture_stats = self.conjectures.stats()
         summary = RunSummary(
             research_name=self.spec.name,
             evaluated=self.evaluated,
@@ -427,6 +684,11 @@ class ResearchEngine:
             best_candidate_id=best.id if best else None,
             best_score=best.score if best else None,
             best_payload=best.payload if best else None,
+            observation_count=conjecture_stats["observations"],
+            conjecture_count=conjecture_stats["conjectures"],
+            empirically_supported_conjectures=conjecture_stats["empirically_supported"],
+            refuted_conjectures=conjecture_stats["refuted"],
+            counterexample_count=conjecture_stats["counterexamples"],
             manifest_fingerprint=manifest_fingerprint,
             workspace=str(self.workspace),
         )
@@ -437,6 +699,7 @@ class ResearchEngine:
         self.db.close()
         self.graph.close()
         self.ideas.close()
+        self.conjectures.close()
 
     def __enter__(self) -> "ResearchEngine":
         return self

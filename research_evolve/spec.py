@@ -52,6 +52,21 @@ class ExplorerPolicy:
 
 
 @dataclass(slots=True)
+class ConjecturePolicy:
+    """Controls the observation -> conjecture -> counterexample research loop."""
+
+    enabled: bool = False
+    interval: int = 1
+    observations_per_interval: int = 12
+    conjectures_per_interval: int = 2
+    context_candidates: int = 24
+    context_conjectures: int = 12
+    counterexample_trials: int = 8
+    min_evidence: int = 3
+    timeout_seconds: float = 60.0
+
+
+@dataclass(slots=True)
 class ResearchSpec:
     """Machine-readable contract for one mathematical research run."""
 
@@ -65,6 +80,7 @@ class ResearchSpec:
     budget: Budget = field(default_factory=Budget)
     search: SearchPolicy = field(default_factory=SearchPolicy)
     explorer: ExplorerPolicy = field(default_factory=ExplorerPolicy)
+    conjecture: ConjecturePolicy = field(default_factory=ConjecturePolicy)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
@@ -94,6 +110,18 @@ class ResearchSpec:
             raise ValueError("explorer context/feedback sizes must be positive")
         if self.explorer.timeout_seconds <= 0:
             raise ValueError("explorer.timeout_seconds must be positive")
+        if self.conjecture.interval < 1:
+            raise ValueError("conjecture.interval must be positive")
+        if self.conjecture.observations_per_interval < 1 or self.conjecture.conjectures_per_interval < 1:
+            raise ValueError("conjecture observation/conjecture counts must be positive")
+        if self.conjecture.context_candidates < 1 or self.conjecture.context_conjectures < 1:
+            raise ValueError("conjecture context sizes must be positive")
+        if self.conjecture.counterexample_trials < 0:
+            raise ValueError("conjecture.counterexample_trials must be non-negative")
+        if self.conjecture.min_evidence < 1:
+            raise ValueError("conjecture.min_evidence must be positive")
+        if self.conjecture.timeout_seconds <= 0:
+            raise ValueError("conjecture.timeout_seconds must be positive")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -111,6 +139,7 @@ class ResearchSpec:
             budget=Budget(**data.get("budget", {})),
             search=SearchPolicy(**data.get("search", {})),
             explorer=ExplorerPolicy(**data.get("explorer", {})),
+            conjecture=ConjecturePolicy(**data.get("conjecture", {})),
             metadata=dict(data.get("metadata", {})),
         )
         spec.validate()

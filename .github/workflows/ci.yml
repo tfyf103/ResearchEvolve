@@ -41,3 +41,15 @@ jobs:
             --islands 2
           research-evolve ideas --workspace .researchevolve/ci-semantic42 --limit 2
           research-evolve proposals --workspace .researchevolve/ci-semantic42 --limit 2
+      - name: v0.4 conjecture and counterexample smoke test
+        run: |
+          research-evolve run \
+            --spec examples/conjecture42/spec.json \
+            --evaluator examples/target42/evaluator.py \
+            --seeds examples/conjecture42/seeds.json \
+            --conjecturer-command "python examples/conjecture42/conjecturer.py" \
+            --workspace .researchevolve/ci-conjecture42 \
+            --islands 2
+          research-evolve observations --workspace .researchevolve/ci-conjecture42 --limit 3
+          research-evolve conjectures --workspace .researchevolve/ci-conjecture42 --limit 3
+          research-evolve counterexamples --workspace .researchevolve/ci-conjecture42 --limit 3

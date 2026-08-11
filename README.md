@@ -2,57 +2,63 @@
 
 > **A research harness for AI-driven mathematical discovery.**
 >
-> ResearchEvolve 把 LLM 的创造性与可审计的演化搜索、自动评测、结构化研究记忆分开：**Explorer 负责提出想法，Evaluator 负责决定真假与质量。**
+> ResearchEvolve 把 **LLM 创造性、演化搜索、自动评测、经验猜想、反例攻击和结构化研究记忆** 放到同一个可审计闭环里，同时坚持：**生成者提出想法，Evaluator 决定候选是否合法；有限实验只能支持或反驳猜想，不能冒充证明。**
 
-当前版本：**v0.3.0**
+当前版本：**v0.4.0**
 
-## 为什么做这个项目
+## 项目定位
 
-ResearchEvolve 不是“让一个 LLM 一次回答数学题”的 Prompt，也不是固定的多 Agent 聊天室。它更接近一个可扩展的数学研究执行环境：
+ResearchEvolve 不是一个巨大 Prompt，也不是固定的多 Agent 聊天室。它是一个可以持续搜索、积累、恢复、复现和审计的数学研究执行环境。
 
 ```text
-                         ResearchSpec
+                              ResearchSpec
+                                   │
+                 ┌─────────────────┼─────────────────┐
+                 ▼                 ▼                 ▼
+        Four-level Mutation   Explorer / LLM    Observation
+                 │                 │                 │
+                 │          Research Proposal        ▼
+                 │                 │            Conjecturer
+                 │            Idea Genome            │
+                 │                 │             Conjecture
+                 │       Semantic Mutation/          │
+                 │            Crossover              ▼
+                 │                 │          Counterexample Search
+                 └────────────┬────┘                 │
+                              ▼                      │
+                          Candidate ◄────────────────┘
                               │
-                 ┌────────────┴────────────┐
-                 ▼                         ▼
-        Four-level Mutation        Explorer / LLM
-                 │                         │
-                 │                  Research Proposal
-                 │                         │
-                 │                    Idea Genome
-                 │                         │
-                 │             Semantic Mutation/Crossover
-                 │                         │
-                 └──────────────┬──────────┘
-                                ▼
-                            Candidate
-                                │
-                                ▼
-                        Evaluator Cascade
-                                │
-                ┌───────────────┼───────────────┐
-                ▼               ▼               ▼
-           MAP-Elites        Pareto          Novelty
-            + Islands        Archive         Archive
-                │               │               │
-                └───────────────┼───────────────┘
-                                ▼
-                         Candidate DB
-                                │
-                         Research Graph
-                                │
-                    IdeaMemory / Feedback
-                                │
+                              ▼
+                      Evaluator Cascade
+                              │
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+         MAP-Elites        Pareto          Novelty
+          + Islands        Archive         Archive
+              │               │               │
+              └───────────────┼───────────────┘
+                              ▼
+                       Candidate DB
+                              │
+                       Research Graph
+                    ┌─────────┴─────────┐
+                    ▼                   ▼
+               IdeaMemory        ConjectureMemory
+                    │                   │
+                    └─────────┬─────────┘
+                              ▼
                     Checkpoint + Manifest
 ```
 
-核心原则：
+## 核心原则
 
-1. **LLM 不拥有最终裁决权。** 所有 semantic candidate 仍要通过独立 evaluator。
-2. **不要只保留 Top-K。** MAP-Elites、islands、Pareto 与 novelty 共同保护不同研究路线。
-3. **研究过程必须可追踪。** 候选、父子关系、Idea Genome、提案、评测结果都持久化。
-4. **昂贵验证要分层。** cheap-to-expensive evaluator cascade 避免把计算浪费在明显无效候选上。
-5. **外部模型是可替换组件。** v0.3 不绑定 OpenAI / Claude / Gemini / 本地模型中的任何一家。
+1. **LLM 不拥有最终裁决权。** Explorer 和 Conjecturer 都不能宣布 candidate 正确。
+2. **有限实验不是证明。** v0.4 只有 `empirically_supported`，没有 `proved`。
+3. **先找反例，再谈信心。** 每个机器可测试猜想都会先扫描已有 archive，再按预算主动搜索 counterexample。
+4. **不要只保留 Top-K。** MAP-Elites、islands、Pareto 和 novelty 共同保护不同研究路线。
+5. **昂贵验证分层。** Evaluator Cascade 从便宜到昂贵短路无效候选。
+6. **研究过程必须可恢复、可追踪。** Candidate、Idea、Observation、Conjecture、Counterexample 都有持久化 lineage。
+7. **模型供应商可替换。** CommandExplorer / CommandConjecturer 可以包装 OpenAI、Claude、Gemini、本地模型或确定性程序。
 
 ---
 
@@ -87,15 +93,28 @@ ResearchEvolve 不是“让一个 LLM 一次回答数学题”的 Prompt，也�
 - structured `ResearchProposal`
 - persistent `IdeaGenome`
 - restricted `SemanticPatch`
-- semantic mutation
-- semantic crossover
+- semantic mutation / crossover
 - `IdeaMemory` feedback loop
-- Research Graph 中的 Idea → Proposal → Candidate lineage
+- Idea → Proposal → Candidate lineage
 - Explorer failure isolation
-- `ideas` / `proposals` CLI inspection
-- semantic42 end-to-end demo
 
-详细设计见 [`docs/V0.3.md`](docs/V0.3.md)。
+详细设计：[`docs/V0.3.md`](docs/V0.3.md)
+
+## v0.4 — Observation → Conjecture → Counterexample
+
+- deterministic `ObservationExtractor`
+- provider-neutral `Conjecturer`
+- external `CommandConjecturer`
+- safe machine-testable `Predicate` DSL
+- archive-first Counterexample Scan
+- mutation-driven Counterexample Search
+- persistent `ConjectureMemory`
+- `Observation / Conjecture / Counterexample` Research Graph nodes
+- conjecture refinement lineage
+- resume-safe empirical test journal
+- explicit `proposed / empirically_supported / refuted / invalid` statuses
+
+详细设计：[`docs/V0.4.md`](docs/V0.4.md)
 
 ---
 
@@ -104,7 +123,6 @@ ResearchEvolve 不是“让一个 LLM 一次回答数学题”的 Prompt，也�
 ```bash
 git clone https://github.com/tfyf103/ResearchEvolve.git
 cd ResearchEvolve
-
 python -m venv .venv
 ```
 
@@ -120,21 +138,16 @@ Windows PowerShell：
 .venv\Scripts\Activate.ps1
 ```
 
-安装：
+安装与测试：
 
 ```bash
 pip install -e ".[dev]"
-```
-
-测试：
-
-```bash
 pytest -q
 ```
 
 ---
 
-# Demo 1：target42 — 验证基础闭环
+# Demo 1：target42 — 基础 Evolutionary Harness
 
 ```bash
 research-evolve run \
@@ -145,41 +158,20 @@ research-evolve run \
   --islands 4
 ```
 
-查看最佳候选：
+查看：
 
 ```bash
-research-evolve inspect \
-  --workspace .researchevolve/target42 \
-  --limit 10
-```
-
-查看 Pareto frontier：
-
-```bash
-research-evolve pareto \
-  --workspace .researchevolve/target42
-```
-
-查看实验 manifest：
-
-```bash
-research-evolve manifest \
-  --workspace .researchevolve/target42
-```
-
-导出 Research Graph：
-
-```bash
-research-evolve graph \
-  --workspace .researchevolve/target42 \
-  --output target42-graph.json
+research-evolve inspect --workspace .researchevolve/target42 --limit 10
+research-evolve pareto --workspace .researchevolve/target42
+research-evolve manifest --workspace .researchevolve/target42
+research-evolve graph --workspace .researchevolve/target42 --output target42-graph.json
 ```
 
 ---
 
 # Demo 2：qLDPC Domain Pack
 
-v0.2 开始内置一个**纯 Python、小规模、正确性优先**的 circulant bicycle/CSS benchmark：
+v0.2 内置一个**纯 Python、小规模、正确性优先**的 circulant bicycle/CSS benchmark：
 
 ```bash
 research-evolve run \
@@ -190,7 +182,7 @@ research-evolve run \
   --islands 4
 ```
 
-它使用三阶段 evaluator cascade：
+Evaluator Cascade：
 
 ```text
 Candidate
@@ -202,9 +194,9 @@ GF(2) rank → n, k, rate, row weight
 exact small-code distance enumeration
 ```
 
-> 当前 exact distance 只用于 `size <= 7` 的集成 benchmark，不是生产级 qLDPC distance solver。未来可以把后两级替换/扩展成 BP、BP-OSD、OSD-CS、MILP，而无需改动通用搜索引擎。
+> 当前 exact distance 只用于 `size <= 7` 的集成 benchmark，不是生产级 qLDPC distance solver。未来可以替换/扩展成 BP、BP-OSD、OSD-CS、MILP，而无需改通用 Research Engine。
 
-qLDPC pack 也实现了领域化四层 mutation：
+领域化四层 mutation：
 
 ```text
 Local           少量 circulant shift 修改
@@ -215,9 +207,9 @@ Representation  circulant ↔ polynomial
 
 ---
 
-# Demo 3：semantic42 — v0.3 Explorer 闭环
+# Demo 3：semantic42 — Explorer / Idea Genome
 
-这个 demo 不需要 API key。`examples/semantic42/explorer.py` 是一个确定性脚本，用来模拟真正 LLM Explorer 应遵守的 JSON 协议。
+无需 API key：
 
 ```bash
 research-evolve run \
@@ -229,373 +221,364 @@ research-evolve run \
   --islands 2
 ```
 
-查看 Idea Genome：
+查看：
 
 ```bash
-research-evolve ideas \
-  --workspace .researchevolve/semantic42
+research-evolve ideas --workspace .researchevolve/semantic42
+research-evolve proposals --workspace .researchevolve/semantic42
 ```
 
-查看提案与 evaluator 结果：
-
-```bash
-research-evolve proposals \
-  --workspace .researchevolve/semantic42
-```
-
-你会得到类似的研究链：
+研究链：
 
 ```text
 Candidate A
     │
     └── inspired
           ▼
-       Proposal
-          │
-          ├── proposed_as ◄── Idea Genome
+       Proposal ◄── proposed_as ── Idea Genome
           │
           └── realized_as
                  ▼
              Candidate B
                  │
-                 ├── evaluated_as → Evaluation
-                 └── expresses ───→ Idea Genome
+                 ▼
+              Evaluator
 ```
-
-下一次 Explorer 调用会看到之前提案的 accepted / rejected / invalid 状态与 score，从而形成最小的**经验反馈闭环**。
 
 ---
 
-# 创建自己的 ResearchSpec
+# Demo 4：conjecture42 — Observation / Conjecture / Counterexample
+
+无需 API key：
 
 ```bash
-research-evolve init research.json
+research-evolve run \
+  --spec examples/conjecture42/spec.json \
+  --evaluator examples/target42/evaluator.py \
+  --seeds examples/conjecture42/seeds.json \
+  --conjecturer-command "python examples/conjecture42/conjecturer.py" \
+  --workspace .researchevolve/conjecture42 \
+  --islands 2
 ```
 
-核心结构：
+查看 observation：
+
+```bash
+research-evolve observations \
+  --workspace .researchevolve/conjecture42
+```
+
+查看猜想：
+
+```bash
+research-evolve conjectures \
+  --workspace .researchevolve/conjecture42
+```
+
+查看反例：
+
+```bash
+research-evolve counterexamples \
+  --workspace .researchevolve/conjecture42
+```
+
+Demo 故意提出：
+
+```text
+Conjecture A: score < 0
+```
+
+因为 seed 中包含 `x=42`，其 canonical score 为 `0`，所以已有 archive 会立即给出 counterexample，猜想进入：
+
+```text
+refuted
+```
+
+同时另一个猜想：
+
+```text
+distance_to_42 >= 0
+```
+
+在有限测试中可以进入：
+
+```text
+empirically_supported
+```
+
+但永远不会被 v0.4 标记为 proved。
+
+---
+
+# v0.4 Predicate DSL
+
+Conjecturer 必须把猜想写成机器可测试 predicate。
+
+最小示例：
 
 ```json
 {
-  "name": "my-search",
-  "problem": "Find a better mathematical construction.",
-  "domain": "generic",
-  "mode": "metric_search",
-  "objectives": [
-    {"name": "quality", "direction": "maximize", "weight": 1.0}
-  ],
-  "constraints": [],
-  "behavior_dimensions": ["representation"],
-  "budget": {
-    "generations": 20,
-    "population_size": 32,
-    "evaluator_timeout_seconds": 30,
-    "seed": 0
-  },
-  "search": {
-    "novelty_probability": 0.25,
-    "novelty_k": 5,
-    "migration_interval": 5,
-    "migrants_per_island": 1,
-    "checkpoint_interval": 1
-  },
-  "explorer": {
-    "enabled": false,
+  "statement": "distance is non-negative",
+  "predicate": {
+    "left": {
+      "source": "metrics",
+      "key": "distance"
+    },
+    "operator": "ge",
+    "right_constant": 0
+  }
+}
+```
+
+可引用：
+
+```text
+score
+payload.<key>
+metrics.<key>
+behavior.<key>
+```
+
+支持比较：
+
+```text
+lt  le  gt  ge  eq  ne
+```
+
+也可引用另一个字段：
+
+```json
+{
+  "left": {"source": "metrics", "key": "distance"},
+  "operator": "ge",
+  "right_ref": {"source": "payload", "key": "lower_bound"}
+}
+```
+
+不支持任意 Python 表达式，也不会调用 `eval` / `exec`。
+
+---
+
+# Counterexample Search
+
+每个 conjecture 会依次经过：
+
+```text
+Conjecture
+   ↓
+Scan current MAP-Elites / Pareto / Novelty candidates
+   ↓
+found violation? ── yes ──> refuted
+   │
+   no
+   ↓
+Counterexample trials
+   ↓
+sample parent
+   ↓
+Four-level mutation
+   ↓
+Evaluator Cascade
+   ↓
+Predicate test
+   ↓
+violation? ── yes ──> refuted
+   │
+   no
+   ↓
+min_evidence reached?
+   ├── yes → empirically_supported
+   └── no  → proposed
+```
+
+主动反例搜索得到的新 candidate 会进入正常 archive，所以攻击猜想也会改善后续研究状态。
+
+---
+
+# ResearchSpec v0.4
+
+```json
+{
+  "conjecture": {
+    "enabled": true,
     "interval": 1,
-    "proposals_per_interval": 2,
-    "context_candidates": 8,
-    "feedback_items": 12,
+    "observations_per_interval": 12,
+    "conjectures_per_interval": 2,
+    "context_candidates": 24,
+    "context_conjectures": 12,
+    "counterexample_trials": 8,
+    "min_evidence": 3,
     "timeout_seconds": 60
   }
 }
 ```
 
----
-
-# Evaluator 协议
-
-Evaluator 从 stdin 读取一个 candidate JSON，并向 stdout 输出：
-
-```json
-{
-  "valid": true,
-  "score": 0.82,
-  "metrics": {
-    "distance": 12,
-    "rate": 0.15
-  },
-  "behavior": {
-    "representation": "graph"
-  },
-  "diagnostics": {}
-}
-```
-
-约定：
-
-- `valid`：硬约束是否通过。
-- `score`：统一为**越大越好**的 canonical score，供 MAP-Elites 等单分数机制使用。
-- `metrics`：保留原始领域指标，Pareto Archive 按 `ResearchSpec.objectives` 使用。
-- `behavior`：MAP-Elites / novelty 的行为特征。
-- `diagnostics`：评测、cascade 和研究元数据。
-
-多个 evaluator 可以形成 cascade：
+完整模板：
 
 ```bash
-research-evolve run \
-  --spec research.json \
-  --evaluator evaluator_constraints.py \
-  --evaluator evaluator_cheap.py \
-  --evaluator evaluator_exact.py \
-  --seeds seeds.json
+research-evolve init research.json
 ```
-
-任意阶段 `valid=false` 时后续阶段不会执行。
 
 ---
 
-# 四层 Mutation
+# 外部 Conjecturer
 
-内置 `FourLevelMutator` 是通用 fallback：
-
-```text
-Level 1  Local Mutation
-Level 2  Structural Mutation
-Level 3  Algebraic Mutation
-Level 4  Representation Mutation
-```
-
-领域项目建议继承：
-
-```python
-from research_evolve.mutation import FourLevelMutator
-
-
-class MyMutator(FourLevelMutator):
-    def local(self, payload, rng):
-        return payload
-
-    def structural(self, payload, rng):
-        return payload
-
-    def algebraic(self, payload, rng):
-        return payload
-
-    def representation(self, payload, rng):
-        return payload
-```
-
-CLI：
+任何模型都可以通过一个 wrapper 接入，只需要遵守 JSON stdin/stdout 协议：
 
 ```bash
 research-evolve run \
   --spec research.json \
   --evaluator evaluator.py \
   --seeds seeds.json \
-  --mutator my_domain.mutations:MyMutator
+  --conjecturer-command "python my_conjecturer.py"
 ```
+
+Conjecturer 会看到：
+
+```text
+problem
+objectives
+constraints
+structured observations
+candidate summaries
+previous conjectures + statuses
+```
+
+它看不到 evaluator 源码，也没有权力决定 truth status。
 
 ---
 
-# v0.3 Explorer 协议
+# 持久化产物
 
-Explorer 可以是：
-
-- OpenAI 模型 wrapper
-- Claude wrapper
-- Gemini wrapper
-- Qwen / DeepSeek / GLM wrapper
-- 本地模型
-- ChatGPT / Codex Skill
-- 启发式算法
-
-ResearchEvolve 本身不绑定 provider。
-
-外部 Explorer 接收：
-
-```text
-Problem
-Objectives / Constraints
-Top / Pareto / Novel candidates
-Candidate Idea Genomes
-Recent proposal outcomes
-```
-
-它只能返回：
-
-```text
-semantic_mutation
-semantic_crossover
-```
-
-并使用受限 `SemanticPatch`：
-
-```json
-{
-  "set": {},
-  "delete": [],
-  "append": {}
-}
-```
-
-因此 v0.3 的默认路径不是“让 LLM 任意执行代码”，而是：
-
-```text
-LLM idea
-   ↓
-structured proposal
-   ↓
-auditable patch/crossover
-   ↓
-candidate
-   ↓
-independent evaluator
-```
-
-完整 JSON schema 和 wrapper 示例见 [`docs/V0.3.md`](docs/V0.3.md)。
-
----
-
-# Checkpoint / Resume
-
-默认每代保存：
-
-```text
-checkpoint.json
-```
-
-恢复：
-
-```bash
-research-evolve run \
-  --spec research.json \
-  --evaluator evaluator.py \
-  --seeds seeds.json \
-  --workspace .researchevolve/my-run \
-  --resume
-```
-
-Resume 会检查 manifest fingerprint。Spec、seeds、evaluators、mutator、domain pack 或 Explorer identity 变化时，不会静默把它们当成同一个实验继续。
-
-对于外部 LLM，本项目不承诺采样结果 bit-for-bit 可复现；v0.3 的策略是把**实际返回的结构化提案和评测结果完整持久化**，保证研究过程可审计。
-
----
-
-# 工作区 artifacts
-
-一次 v0.3 运行通常产生：
+一次 v0.4 run 典型产生：
 
 ```text
 .researchevolve/run/
 ├── candidates.sqlite3
-├── research_graph.sqlite3
 ├── ideas.sqlite3
+├── conjectures.sqlite3
+├── research_graph.sqlite3
 ├── checkpoint.json
 ├── manifest.json
 ├── pareto.json
 └── summary.json
 ```
 
-职责：
+`conjectures.sqlite3`：
 
-- `candidates.sqlite3`：candidate、lineage、score、metrics、behavior。
-- `research_graph.sqlite3`：Problem / Idea / Proposal / Candidate / Evaluation 关系。
-- `ideas.sqlite3`：Idea Genome、rationale、expected effects、provider metadata 与 evaluator outcome。
-- `checkpoint.json`：恢复搜索状态。
-- `manifest.json`：输入与运行环境指纹。
-- `pareto.json`：最新多目标 frontier。
-- `summary.json`：运行摘要。
+```text
+observations
+conjectures
+conjecture_tests
+counterexamples
+```
+
+每一个 empirical test 都单独记录，因此 checkpoint resume 可以可靠 prune 半截 generation 并重新计算猜想状态。
 
 ---
 
-# Domain Pack
+# Research Graph
 
-Domain Pack 让领域数学知识不侵入通用 orchestrator。
-
-一个 pack 可以提供：
+到 v0.4，图谱已经覆盖：
 
 ```text
-seed normalization
-custom FourLevelMutator
-evaluator cascade
+Problem
+├── Candidate
+│   ├── Evaluation
+│   ├── Idea / Proposal lineage
+│   └── Counterexample
+├── Observation
+│   └── derived_from Candidate
+└── Conjecture
+    ├── suggested_by Observation
+    ├── refined_from Conjecture
+    └── refuted_by Candidate
 ```
 
-内置：
+主要关系：
 
 ```text
-qldpc
-```
-
-长期可以扩展：
-
-```text
-combinatorics/
-graph_theory/
-circle_packing/
-number_theory/
-optimization/
-geometry/
+investigates
+evaluated_as
+mutated_to
+inspired
+proposed_as
+realized_as
+expresses
+has_observation
+derived_from
+suggests
+has_conjecture
+refined_into
+evidence_for
+refutes
+instantiated_as
+counterexample_to
 ```
 
 ---
 
-# 当前边界
+# Checkpoint / Resume
 
-ResearchEvolve v0.3 已经形成：
-
-```text
-Machine-evaluable discovery
-        +
-Evolutionary diversity search
-        +
-Structured semantic proposals
-        +
-Persistent idea memory
-        +
-Independent evaluation
+```bash
+research-evolve run ... --resume
 ```
 
-但还没有把全部“AI 数学家”能力一次塞进来。当前尚未实现：
+恢复时会：
 
-- 自动文献调查与引用核验
-- 从实验数据自动形成 conjecture
-- dedicated counterexample search
-- proof decomposition / prover / skeptic
-- Lean / Rocq formal verification
+```text
+restore RNG + MAP-Elites / Pareto / Novelty
+prune IdeaMemory after checkpoint generation
+prune Observation / Conjecture / Tests / Counterexamples after checkpoint generation
+recompute surviving conjecture statuses
+resume next generation
+```
+
+Conjecture context 只从 checkpoint 恢复出的 archives 构造，不直接把 CandidateDB 中可能残留的半截 generation candidate 混入新上下文。
 
 ---
 
-# Roadmap
+# 安全边界
+
+详细见 [`SECURITY.md`](SECURITY.md)。
+
+简要说：
+
+- Evaluator subprocess 是协议边界，不是强安全沙箱。
+- CommandExplorer / CommandConjecturer 也是协议边界，不是强沙箱。
+- 生产环境应该把 Agent / Explorer / Conjecturer 与 private evaluator/grader 分容器、VM 或远程 worker。
+- v0.4 Predicate DSL 不执行任意模型生成代码。
+
+---
+
+# 路线图
 
 ```text
-v0.1  ResearchSpec + evaluator + Candidate DB + MAP-Elites/islands + mutation + graph
-v0.2  evaluator cascade + Pareto/novelty + checkpoint/resume + DomainPack + qLDPC
-v0.3  Explorer + ResearchProposal + Idea Genome + semantic mutation/crossover + feedback
-v0.4  Observation → Conjecture → Counterexample loop
-v0.5  Proof planner + prover + skeptic + independent verifier
-v0.6  Lean / symbolic formalization
+v0.1  ResearchSpec + Hidden Evaluator + Candidate DB + MAP-Elites + Mutation + Research Graph
+v0.2  Evaluator Cascade + Pareto + Novelty + Checkpoint + DomainPack + qLDPC
+v0.3  Explorer + Idea Genome + Semantic Mutation/Crossover + IdeaMemory
+v0.4  Observation + Conjecture + Counterexample + Empirical Refinement
+v0.5  Proof Planner + Lemma Decomposition + Prover + Adversarial Verifier
+v0.6  Lean / symbolic formal verification
 v1.0  Autonomous Mathematical Research Lab
 ```
 
-长期目标：
+长期目标不是做一个会“说像数学家一样的话”的 Agent，而是构建：
 
 ```text
-Literature
-    ↓
-Explore
-    ↓
-Experiment / Evolve
-    ↓
-Observe
-    ↓
-Conjecture
-    ↓
-Attack / Counterexample
-    ↓
-Prove
-    ↓
-Verify
-    ↓
-Research report
+LLM creativity
+      +
+Evolutionary search
+      +
+Automated evaluation
+      +
+Empirical conjecture formation
+      +
+Counterexample attack
+      +
+Structured research memory
+      +
+Independent verification
 ```
 
-让数学研究从“一次回答”变成一个可以持续搜索、积累、攻击、验证和复现的研究过程。
+让数学研究从一次回答，变成一个可以持续搜索、积累、失败、修正、验证和复现的过程。

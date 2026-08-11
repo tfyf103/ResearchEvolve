@@ -109,6 +109,15 @@ class CandidateDB:
         rows = self.conn.execute("SELECT * FROM candidates ORDER BY created_at").fetchall()
         return [self._decode(row) for row in rows]
 
+    def prune_after_generation(self, generation: int) -> list[str]:
+        """Remove candidates newer than a restored generation checkpoint."""
+
+        rows = self.conn.execute("SELECT id FROM candidates WHERE generation > ?", (generation,)).fetchall()
+        candidate_ids = [str(row["id"]) for row in rows]
+        self.conn.execute("DELETE FROM candidates WHERE generation > ?", (generation,))
+        self.conn.commit()
+        return candidate_ids
+
     @staticmethod
     def _decode(row: sqlite3.Row) -> Candidate:
         return Candidate(
