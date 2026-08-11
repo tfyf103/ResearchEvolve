@@ -168,10 +168,9 @@ def realize_proposal(proposal: ResearchProposal, parents: dict[str, dict[str, An
     if proposal.kind == "semantic_crossover":
         secondary = parents[proposal.parent_ids[1]]
         for key in proposal.inherit_from_secondary:
-            if key in secondary:
-                primary[key] = copy.deepcopy(secondary[key])
-            else:
-                primary.pop(key, None)
+            if key not in secondary:
+                raise ValueError(f"secondary parent does not contain requested crossover field {key!r}")
+            primary[key] = copy.deepcopy(secondary[key])
     return apply_semantic_patch(primary, proposal.patch)
 
 
@@ -264,6 +263,16 @@ class IdeaMemory:
             (json.dumps(metadata, sort_keys=True), proposal_id),
         )
         self.conn.commit()
+
+    def prune_after_generation(self, generation: int) -> int:
+        """Drop partial Explorer memory newer than the restored generation checkpoint."""
+
+        row = self.conn.execute("SELECT COUNT(*) AS count FROM proposals WHERE generation > ?", (generation,)).fetchone()
+        count = int(row["count"]) if row is not None else 0
+        self.conn.execute("DELETE FROM proposals WHERE generation > ?", (generation,))
+        self.conn.execute("DELETE FROM ideas WHERE id NOT IN (SELECT DISTINCT idea_id FROM proposals)")
+        self.conn.commit()
+        return count
 
     def genome_for_candidate(self, candidate_id: str) -> dict[str, Any] | None:
         row = self.conn.execute(
