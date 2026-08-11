@@ -24,9 +24,13 @@ def _write_fake_lean(path: Path, version: str = "4.30.0") -> None:
         "\n".join(
             [
                 "from __future__ import annotations",
-                "import os, pathlib, sys",
-                f"if os.environ.get('ELAN_TOOLCHAIN') != {EXPECTED_TOOLCHAIN!r}:",
-                "    print('missing frozen ELAN_TOOLCHAIN', file=sys.stderr)",
+                "import pathlib, sys",
+                "toolchain = pathlib.Path.cwd() / 'lean-toolchain'",
+                "if not toolchain.is_file():",
+                "    print('missing frozen lean-toolchain', file=sys.stderr)",
+                "    raise SystemExit(2)",
+                f"if toolchain.read_text(encoding='utf-8').strip() != {EXPECTED_TOOLCHAIN!r}:",
+                "    print('wrong frozen lean-toolchain', file=sys.stderr)",
                 "    raise SystemExit(2)",
                 "if '--version' in sys.argv:",
                 f"    print('Lean (version {version}, fake-test-kernel)')",
@@ -247,7 +251,7 @@ def test_kernel_requires_frozen_toolchain_version(tmp_path: Path) -> None:
     assert result.gate_reason == "toolchain-version-mismatch"
 
 
-def test_kernel_forces_toolchain_env_in_temp_workdir(tmp_path: Path) -> None:
+def test_kernel_writes_frozen_toolchain_in_temp_workdirs(tmp_path: Path) -> None:
     fake = tmp_path / "fake_lean.py"
     _write_fake_lean(fake)
     spec = _spec()
