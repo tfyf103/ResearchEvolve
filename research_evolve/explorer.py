@@ -76,6 +76,23 @@ class CommandExplorer:
     def name(self) -> str:
         return self._identity
 
+    @staticmethod
+    def _sanitize_external_proposal(item: dict[str, Any]) -> dict[str, Any]:
+        """Prevent an external model from choosing internal Research Graph IDs."""
+
+        sanitized = dict(item)
+        external_proposal_id = sanitized.pop("id", None)
+        genome = dict(sanitized.get("genome") or {})
+        external_idea_id = genome.pop("id", None)
+        sanitized["genome"] = genome
+        metadata = dict(sanitized.get("metadata", {}))
+        if external_proposal_id is not None:
+            metadata["external_proposal_id"] = str(external_proposal_id)
+        if external_idea_id is not None:
+            metadata["external_idea_id"] = str(external_idea_id)
+        sanitized["metadata"] = metadata
+        return sanitized
+
     def propose(self, context: ResearchContext, count: int) -> list[ResearchProposal]:
         if count < 1:
             return []
@@ -128,5 +145,5 @@ class CommandExplorer:
         for item in items[:count]:
             if not isinstance(item, dict):
                 raise RuntimeError("each explorer proposal must be a JSON object")
-            proposals.append(ResearchProposal.from_dict(item))
+            proposals.append(ResearchProposal.from_dict(self._sanitize_external_proposal(item)))
         return proposals
