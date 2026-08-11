@@ -40,6 +40,18 @@ class SearchPolicy:
 
 
 @dataclass(slots=True)
+class ExplorerPolicy:
+    """Controls for optional LLM/research-explorer proposal generation."""
+
+    enabled: bool = False
+    interval: int = 1
+    proposals_per_interval: int = 2
+    context_candidates: int = 8
+    feedback_items: int = 12
+    timeout_seconds: float = 60.0
+
+
+@dataclass(slots=True)
 class ResearchSpec:
     """Machine-readable contract for one mathematical research run."""
 
@@ -52,6 +64,7 @@ class ResearchSpec:
     behavior_dimensions: list[str] = field(default_factory=list)
     budget: Budget = field(default_factory=Budget)
     search: SearchPolicy = field(default_factory=SearchPolicy)
+    explorer: ExplorerPolicy = field(default_factory=ExplorerPolicy)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
@@ -73,6 +86,14 @@ class ResearchSpec:
             raise ValueError("migration settings must be positive")
         if self.search.checkpoint_interval < 1:
             raise ValueError("checkpoint_interval must be positive")
+        if self.explorer.interval < 1:
+            raise ValueError("explorer.interval must be positive")
+        if self.explorer.proposals_per_interval < 1:
+            raise ValueError("explorer.proposals_per_interval must be positive")
+        if self.explorer.context_candidates < 1 or self.explorer.feedback_items < 1:
+            raise ValueError("explorer context/feedback sizes must be positive")
+        if self.explorer.timeout_seconds <= 0:
+            raise ValueError("explorer.timeout_seconds must be positive")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -89,6 +110,7 @@ class ResearchSpec:
             behavior_dimensions=list(data.get("behavior_dimensions", [])),
             budget=Budget(**data.get("budget", {})),
             search=SearchPolicy(**data.get("search", {})),
+            explorer=ExplorerPolicy(**data.get("explorer", {})),
             metadata=dict(data.get("metadata", {})),
         )
         spec.validate()
