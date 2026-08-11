@@ -91,18 +91,20 @@ class _CommandActor:
         ).hexdigest()[:16]
 
     def _build_independence_fingerprint(self) -> str:
-        # If a wrapper script/file is visible, independence is based on that
-        # implementation rather than on role/prompt flags. This prevents the same
-        # script with `--role prover` and `--role verifier` from self-verifying.
+        # For directly referenced wrapper files, use file CONTENT rather than
+        # paths/role flags. Copying the same wrapper to another filename should
+        # not turn self-verification into "independent" verification.
         if self._files:
             identity_input: dict[str, Any] = {
                 "executable": Path(self.command[0]).name,
-                "files": self._files,
+                "content_sha256": sorted(item["sha256"] for item in self._files),
             }
         else:
-            # For commands such as `python -m package`, no direct file is visible;
-            # fall back to the complete command fingerprint.
-            identity_input = {"argv": self.command}
+            # We cannot establish implementation separation for e.g. two
+            # `python -m ...` commands from argv alone. Be conservative: actors
+            # using the same executable have the same independence key. Users
+            # can provide separate wrapper files to make implementations auditable.
+            identity_input = {"executable": Path(self.command[0]).name}
         return hashlib.sha256(
             json.dumps(identity_input, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()[:16]
@@ -115,7 +117,7 @@ class _CommandActor:
 
     @property
     def independence_key(self) -> str:
-        """Role-independent implementation identity used to prevent self-verification."""
+        """Conservative role-independent implementation identity."""
 
         return f"implementation:{Path(self.command[0]).name}:{self._independence_fingerprint}"
 
