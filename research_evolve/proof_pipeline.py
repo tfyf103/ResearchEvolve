@@ -184,10 +184,12 @@ class ProofPipeline:
 
     def _sync_invalidated_proof_graph(self, conjecture_id: str) -> None:
         specs = [item for item in self.memory.list_specs(100000) if item.get("conjecture_id") == conjecture_id]
-        spec_ids = {str(item["id"]) for item in specs}
-        for item in specs:
-            if item.get("status") != "invalid":
-                continue
+        invalid_specs = [item for item in specs if item.get("status") == "invalid"]
+        spec_ids = {str(item["id"]) for item in invalid_specs}
+        if not spec_ids:
+            return
+
+        for item in invalid_specs:
             self.graph.add_node(
                 ResearchNode(
                     id=str(item["id"]),
@@ -198,9 +200,12 @@ class ProofPipeline:
                     created_at=str(item.get("created_at", "")),
                 )
             )
-        for item in self.memory.list_plans(100000):
-            if str(item.get("proof_spec_id")) not in spec_ids or item.get("status") != "invalid":
-                continue
+
+        invalid_plans = [
+            item for item in self.memory.list_plans(100000)
+            if str(item.get("proof_spec_id")) in spec_ids and item.get("status") == "invalid"
+        ]
+        for item in invalid_plans:
             self.graph.add_node(
                 ResearchNode(
                     id=str(item["id"]),
@@ -211,14 +216,44 @@ class ProofPipeline:
                     created_at=str(item.get("created_at", "")),
                 )
             )
-        for item in self.memory.list_artifacts(100000):
-            if str(item.get("proof_spec_id")) not in spec_ids or item.get("status") != "invalid":
-                continue
+            for lemma in item.get("lemmas", []):
+                if not isinstance(lemma, dict) or not lemma.get("id"):
+                    continue
+                self.graph.add_node(
+                    ResearchNode(
+                        id=str(lemma["id"]),
+                        type="lemma",
+                        statement=str(lemma.get("statement", "")),
+                        status="invalid",
+                        payload={**lemma, "proof_plan_id": item.get("id"), "generation": item.get("generation")},
+                    )
+                )
+
+        invalid_artifacts = [
+            item for item in self.memory.list_artifacts(100000)
+            if str(item.get("proof_spec_id")) in spec_ids and item.get("status") == "invalid"
+        ]
+        artifact_ids = {str(item["id"]) for item in invalid_artifacts}
+        for item in invalid_artifacts:
             self.graph.add_node(
                 ResearchNode(
                     id=str(item["id"]),
                     type="proof_artifact",
                     statement=str(item.get("final_argument", ""))[:240],
+                    status="invalid",
+                    payload=item,
+                    created_at=str(item.get("created_at", "")),
+                )
+            )
+
+        for item in self.memory.list_reviews(100000):
+            if str(item.get("proof_artifact_id")) not in artifact_ids or item.get("gated_status") != "invalid":
+                continue
+            self.graph.add_node(
+                ResearchNode(
+                    id=str(item["id"]),
+                    type="proof_review",
+                    statement=f"historical {item.get('decision')} review invalidated by later counterexample",
                     status="invalid",
                     payload=item,
                     created_at=str(item.get("created_at", "")),
