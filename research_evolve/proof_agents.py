@@ -71,23 +71,29 @@ class _CommandActor:
         self.command = parsed
         self.timeout_seconds = float(timeout_seconds)
         self.role = role
-        self._identity = self._build_identity()
+        self._implementation_fingerprint = self._build_implementation_fingerprint()
+        self._identity = f"command:{self.role}:{Path(self.command[0]).name}:{self._implementation_fingerprint}"
 
-    def _build_identity(self) -> str:
+    def _build_implementation_fingerprint(self) -> str:
         files: list[dict[str, str]] = []
         for argument in self.command[1:]:
             path = Path(argument)
             if path.is_file():
                 files.append({"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
-        identity_input = {"role": self.role, "argv": self.command, "files": files}
-        digest = hashlib.sha256(
+        identity_input = {"argv": self.command, "files": files}
+        return hashlib.sha256(
             json.dumps(identity_input, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()[:16]
-        return f"command:{self.role}:{Path(self.command[0]).name}:{digest}"
 
     @property
     def name(self) -> str:
         return self._identity
+
+    @property
+    def independence_key(self) -> str:
+        """Role-independent implementation identity used to prevent self-verification."""
+
+        return f"command:{Path(self.command[0]).name}:{self._implementation_fingerprint}"
 
     def _invoke(self, request: dict[str, Any]) -> Any:
         completed = subprocess.run(
@@ -140,13 +146,12 @@ class CommandProofPlanner(_CommandActor):
         lemmas_raw = raw.get("lemmas")
         if not isinstance(lemmas_raw, list):
             raise RuntimeError("proof planner response requires a lemmas list")
-        plan = ProofPlan(
+        return ProofPlan(
             proof_spec_id=proof_spec.id,
             strategy=str(raw.get("strategy", "")),
             lemmas=[LemmaSpec.from_dict(item) for item in lemmas_raw if isinstance(item, dict)],
             metadata=dict(raw.get("metadata", {})),
         )
-        return plan
 
 
 class CommandProver(_CommandActor):
