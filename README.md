@@ -2,11 +2,11 @@
 
 > A research harness for AI-driven mathematical discovery.
 >
-> 面向机器可评测数学研究的演化搜索基础设施：把 **ResearchSpec、Hidden Evaluator、Candidate DB、MAP-Elites / Islands、四层 Mutation、Research Graph** 串成一个可复现的研究闭环。
+> 面向机器可评测数学研究的演化搜索基础设施：把 **ResearchSpec、Evaluator Cascade、Candidate DB、MAP-Elites / Islands、Pareto / Novelty、四层 Mutation、Checkpoint、Research Graph** 串成一个可持续、可恢复、可复现的研究闭环。
 
 ## 项目定位
 
-ResearchEvolve 不是“让一个 LLM 一次性回答数学题”的 Prompt 工程，而是一个研究执行框架：
+ResearchEvolve 不是“让一个 LLM 一次性回答数学题”的 Prompt 工程，而是给未来的 LLM Explorer / Research Agent 提供一个可信的科研执行底座。
 
 ```text
 ResearchSpec
@@ -15,19 +15,27 @@ Seed Candidates
     ↓
 Four-level Mutation
     ↓
-Hidden Evaluator
+Evaluator Cascade
     ↓
 Candidate DB
     ↓
-MAP-Elites / Islands
-    ↓
-Research Graph
-    └──────────────→ next generation
+┌───────────────┬────────────────┬────────────────┐
+│ MAP-Elites    │ Pareto Archive │ Novelty Archive│
+│ + Islands     │ multi-objective│ behavior search│
+└───────┬───────┴────────┬───────┴────────┬───────┘
+        │                │                │
+        └────────────────┴────────────────┘
+                         ↓
+                  Research Graph
+                         ↓
+               Checkpoint + Manifest
+                         ↓
+                   next generation
 ```
 
-v0.1 优先解决 **machine-evaluable mathematical discovery**：只要一个问题能把候选方案表示成结构化对象，并能通过程序可靠判断合法性和质量，就可以接入 ResearchEvolve。
+v0.2 仍然聚焦 **machine-evaluable mathematical discovery**：只要一个问题能把候选表示成结构化对象，并能通过程序可靠判断合法性、指标和质量，就可以接入 ResearchEvolve。
 
-适合的第一类任务包括：
+适合的任务包括：
 
 - 组合构造与离散数学搜索
 - 图、矩阵、编码理论与 qLDPC 参数搜索
@@ -35,43 +43,57 @@ v0.1 优先解决 **machine-evaluable mathematical discovery**：只要一个问
 - 算法参数 / 程序构造搜索
 - 可以数值验证的符号表达式或猜想探索
 
-证明搜索、文献智能体、Conjecture ↔ Proof ↔ Counterexample 闭环暂不属于 v0.1 的核心范围。
+证明搜索、文献智能体、Conjecture ↔ Proof ↔ Counterexample 闭环会在后续版本加入。
 
 ---
 
-## v0.1 六个核心模块
+# v0.2 新增能力
 
-### 1. ResearchSpec
+## 1. Evaluator Cascade
 
-`research_evolve/spec.py`
+v0.1 每个 candidate 只有一个 evaluator。v0.2 支持把评测拆成从便宜到昂贵的多个阶段：
 
-每次研究都由结构化 `ResearchSpec` 描述：
+```text
+Candidate
+   ↓
+Stage 1: syntax / hard constraints
+   ↓
+Stage 2: cheap numerical metrics
+   ↓
+Stage 3: approximate solver
+   ↓
+Stage 4: expensive exact verifier
+```
 
-- 问题陈述
-- domain
-- research mode
-- objectives
-- constraints
-- MAP-Elites behavior dimensions
-- generations / population / timeout / random seed
+任何阶段返回 `valid=false`，后续昂贵 evaluator 都不会执行。
 
-这使同一个 Research Engine 可以切换不同数学领域，而不用把领域知识硬编码到 orchestrator 中。
+CLI 通过重复 `--evaluator` 构造 cascade：
 
-### 2. Hidden Evaluator
+```bash
+research-evolve run \
+  --spec research.json \
+  --evaluator evaluators/constraints.py \
+  --evaluator evaluators/cheap_metric.py \
+  --evaluator evaluators/exact_metric.py \
+  --seeds seeds.json \
+  --workspace .researchevolve/my-run
+```
 
-`research_evolve/evaluation.py`
+中间 evaluator 可以只返回 `valid / metrics / behavior`，最后一级 evaluator 必须为合法候选返回 canonical `score`。
 
-Evaluator 运行在独立 Python 子进程中，只通过 JSON 协议接收 candidate、返回评测结果：
+Evaluator 协议：
 
 ```json
 {
   "valid": true,
-  "score": -0.25,
+  "score": 0.82,
   "metrics": {
-    "distance": 0.25
+    "distance": 12,
+    "rate": 0.18
   },
   "behavior": {
-    "representation": "graph"
+    "family": "cyclic",
+    "representation": "polynomial"
   },
   "diagnostics": {}
 }
@@ -79,89 +101,190 @@ Evaluator 运行在独立 Python 子进程中，只通过 JSON 协议接收 cand
 
 约定：
 
-- `valid`：候选是否满足硬约束
-- `score`：统一为 **越大越好** 的 canonical score
-- `metrics`：保留领域原始指标
-- `behavior`：MAP-Elites 的行为特征
-- `diagnostics`：错误、约束、调试信息
+- `valid`：是否通过该阶段
+- `score`：统一为“越大越好”的 canonical score
+- `metrics`：领域原始指标，供 Pareto / 报告使用
+- `behavior`：MAP-Elites / Novelty 的行为特征
+- `diagnostics`：评测诊断
 
-> **安全说明**：v0.1 实现的是“进程边界 + 隐藏评测接口契约”，不是强安全沙箱。真实的 LLM Agent 场景中，应把 evaluator 放到 Agent 无法读取的独立 Docker / VM / grader 环境，只暴露评测协议。
+> 当前仍是进程隔离接口，不是强安全沙箱。真实 LLM Agent 场景应把私有 evaluator 放到 Agent 无法读取的 grader container / VM 中。
 
-### 3. Candidate DB
+---
 
-`research_evolve/candidates.py`
+## 2. Pareto Archive
 
-使用 SQLite 持久化：
+v0.2 会真正使用 `ResearchSpec.objectives` 维护非支配前沿。
 
-- candidate payload
-- parent lineage
-- mutation level
-- generation
-- valid / score
-- metrics
-- behavior
-- diagnostics
+例如：
 
-默认工作区会生成：
-
-```text
-.researchevolve/run/
-├── candidates.sqlite3
-├── research_graph.sqlite3
-└── summary.json
+```json
+"objectives": [
+  {"name": "distance", "direction": "maximize"},
+  {"name": "rate", "direction": "maximize"},
+  {"name": "row_weight_x", "direction": "minimize"}
+]
 ```
 
-### 4. MAP-Elites + Islands
+ResearchEvolve 不再只问：
 
-`research_evolve/evolution.py`
+> 哪个 candidate 的单一 score 最大？
 
-ResearchEvolve 不只保留全局 Top-K。
+还会保留：
 
-每个 behavior cell 维护一个 elite，并由多个独立 island 同时探索；每 5 代进行一次轻量 elite migration。
+> 哪些 candidate 在多目标意义下互不支配？
 
-这样可以避免搜索快速塌缩到“同一种思路的十个微小变体”。
-
-### 5. 四层 Mutation
-
-`research_evolve/mutation.py`
-
-统一抽象为：
+运行后自动生成：
 
 ```text
-Level 1  Local Mutation
-Level 2  Structural Mutation
-Level 3  Algebraic Mutation
-Level 4  Representation Mutation
+.researchevolve/run/pareto.json
 ```
 
-内置 `FourLevelMutator` 只是通用 fallback，用于验证整个框架。
+查看：
 
-真正的数学研究建议针对 domain 自定义 mutation，例如 qLDPC 可以分别映射为：
+```bash
+research-evolve pareto \
+  --workspace .researchevolve/run
+```
 
-- Local：修改少量生成元 / 位移 / 参数
-- Structural：改变 block、lift、连接模式或 shape
-- Algebraic：修改群代数、多项式或 lifted-product 结构
-- Representation：在 matrix / graph / polynomial / group-algebra 等表示之间切换
+---
 
-CLI 已支持通过 `module:Class` 加载自定义 mutator。
+## 3. Novelty Search
 
-### 6. Research Graph
+MAP-Elites 负责保存不同 behavior cell 的 elite，Novelty Archive 进一步估计 candidate 与历史行为的差异程度。
 
-`research_evolve/graph.py`
+每个 candidate 的 novelty 会写入：
 
-Research Graph 不等于普通 RAG。
+```json
+"diagnostics": {
+  "search": {
+    "novelty": 0.73
+  }
+}
+```
 
-它记录研究过程中的实体和因果 / lineage 关系：
+父代选择可以按概率偏向高 novelty elite：
+
+```json
+"search": {
+  "novelty_probability": 0.25,
+  "novelty_k": 5
+}
+```
+
+这让搜索不容易快速塌缩到一个局部 family。
+
+---
+
+## 4. Checkpoint / Resume
+
+每个 generation 边界可以保存：
+
+- 当前 generation
+- evaluated / valid 计数
+- Python RNG state
+- 每个 island 的 elite IDs
+- Pareto frontier IDs
+- Novelty archive IDs
+- manifest fingerprint
+
+默认文件：
 
 ```text
-Problem
-  └─ investigates → Candidate A
-                         ├─ evaluated_as → Evaluation A
-                         └─ mutated_to   → Candidate B
-                                              └─ evaluated_as → Evaluation B
+.researchevolve/run/checkpoint.json
 ```
 
-当前节点包括 problem、candidate、evaluation；后续版本会扩展 hypothesis、experiment、conjecture、lemma、counterexample、proof 等对象。
+继续运行：
+
+```bash
+research-evolve run \
+  --spec research.json \
+  --evaluator evaluator.py \
+  --seeds seeds.json \
+  --workspace .researchevolve/run \
+  --resume
+```
+
+如果 spec、seeds、evaluator 文件内容、mutator 或 domain pack 已经变化，ResearchEvolve 会拒绝把旧 checkpoint 当作同一次实验继续。
+
+---
+
+## 5. Reproducibility Manifest
+
+每个新 run 自动写：
+
+```text
+.researchevolve/run/manifest.json
+```
+
+包含：
+
+- 完整 ResearchSpec
+- seeds 的稳定 SHA-256
+- evaluator 路径和文件 SHA-256
+- mutator 类型
+- domain pack
+- ResearchEvolve 版本
+- Python 版本
+- 平台信息
+- 输入 fingerprint
+
+查看：
+
+```bash
+research-evolve manifest \
+  --workspace .researchevolve/run
+```
+
+这不是“保证所有外部 solver 完全确定性”的魔法，但它建立了实验可追踪的最低契约。
+
+---
+
+## 6. Domain Pack
+
+v0.2 引入正式 `DomainPack` 接口，把领域数学与通用搜索引擎分开。
+
+一个 Domain Pack 负责提供：
+
+```text
+DomainPack
+├── evaluator cascade
+├── four-level mutator
+└── seed normalization (optional)
+```
+
+内置 pack 可以直接使用短名称：
+
+```bash
+--domain-pack qldpc
+```
+
+自定义 pack 使用：
+
+```bash
+--domain-pack my_package.domain:MyDomainPack
+```
+
+基础接口：
+
+```python
+from pathlib import Path
+
+from research_evolve.domain import DomainPack
+from research_evolve.mutation import FourLevelMutator
+
+
+class MyDomainPack(DomainPack):
+    name = "my-domain"
+
+    def evaluator_paths(self) -> list[Path]:
+        return [
+            Path("evaluators/constraints.py"),
+            Path("evaluators/exact.py"),
+        ]
+
+    def mutator(self) -> FourLevelMutator:
+        return MyDomainMutator()
+```
 
 ---
 
@@ -196,9 +319,7 @@ pip install -e ".[dev]"
 
 ---
 
-## 2. 跑第一个完整 Demo
-
-仓库自带 `target42`，目标是搜索 `x ≈ 42`。这个问题本身故意非常简单，用来检查 ResearchEvolve 的整个闭环是否正常。
+## 2. 跑 target42 最小 Demo
 
 ```bash
 research-evolve run \
@@ -209,29 +330,19 @@ research-evolve run \
   --islands 4
 ```
 
-运行完成后会输出类似：
+输出工作区：
 
-```json
-{
-  "research_name": "target-42-demo",
-  "evaluated": 194,
-  "valid": 194,
-  "archive_size": 8,
-  "best_candidate_id": "...",
-  "best_score": 0.0,
-  "best_payload": {
-    "x": 42,
-    "representation": "..."
-  },
-  "workspace": ".researchevolve/target42"
-}
+```text
+.researchevolve/target42/
+├── candidates.sqlite3
+├── research_graph.sqlite3
+├── checkpoint.json
+├── manifest.json
+├── pareto.json
+└── summary.json
 ```
 
-具体结果会随 mutation 路径变化。
-
----
-
-## 3. 查看最佳候选
+查看最佳 canonical-score candidates：
 
 ```bash
 research-evolve inspect \
@@ -239,9 +350,7 @@ research-evolve inspect \
   --limit 10
 ```
 
----
-
-## 4. 导出 Research Graph
+导出 Research Graph：
 
 ```bash
 research-evolve graph \
@@ -249,19 +358,112 @@ research-evolve graph \
   --output research-graph.json
 ```
 
-之后可以使用 NetworkX、Neo4j、Gephi 或自定义 Web UI 可视化。
+---
+
+# qLDPC v0.2 Benchmark
+
+v0.2 自带第一个真实数学 Domain Pack：
+
+```text
+research_evolve/domains/qldpc/
+├── common.py
+├── mutation.py
+├── evaluator_constraints.py
+├── evaluator_parameters.py
+└── evaluator_distance.py
+```
+
+它使用一个很小的 **circulant bicycle CSS code** 搜索空间，只依赖 Python 标准库，不需要 MAGMA。
+
+运行：
+
+```bash
+research-evolve run \
+  --spec examples/qldpc/spec.json \
+  --domain-pack qldpc \
+  --seeds examples/qldpc/seeds.json \
+  --workspace .researchevolve/qldpc \
+  --islands 4
+```
+
+Evaluator cascade：
+
+```text
+Candidate
+   ↓
+1. 输入 / CSS commutation
+   ↓
+2. GF(2) rank → n, k, rate, row weight
+   ↓
+3. 小规模 exact distance enumeration
+   ↓
+canonical score
+```
+
+示例 ResearchSpec 同时优化：
+
+```text
+distance ↑
+rate ↑
+row_weight_x ↓
+```
+
+并使用：
+
+```text
+representation
+size
+density_bucket
+```
+
+作为 behavior dimensions。
+
+查看 Pareto frontier：
+
+```bash
+research-evolve pareto \
+  --workspace .researchevolve/qldpc
+```
+
+### 重要边界
+
+这个 qLDPC pack 是 **ResearchEvolve 集成 benchmark**，不是大规模 qLDPC 距离求解器。
+
+为了让 CI 和新手电脑都能跑，当前把 circulant size 限制在很小范围，并使用 exact weight enumeration。
+
+后续真正研究级 qLDPC pack 应替换为：
+
+```text
+Candidate
+   ↓
+syntax / construction validation
+   ↓
+CSS commutation
+   ↓
+GF(2) rank
+   ↓
+cheap distance proxy
+   ↓
+BP-OSD
+   ↓
+OSD-CS / stronger decoding estimate
+   ↓
+MILP exact distance for selected elites
+```
+
+核心 Search Engine 不需要因为 evaluator 升级而改动。
 
 ---
 
-# 创建自己的研究任务
+# ResearchSpec v0.2
 
-## Step 1：生成 ResearchSpec
+生成模板：
 
 ```bash
 research-evolve init research.json
 ```
 
-一个最小 ResearchSpec：
+典型结构：
 
 ```json
 {
@@ -280,73 +482,33 @@ research-evolve init research.json
     "evaluator_timeout_seconds": 30,
     "seed": 0
   },
+  "search": {
+    "novelty_probability": 0.25,
+    "novelty_k": 5,
+    "migration_interval": 5,
+    "migrants_per_island": 1,
+    "checkpoint_interval": 1
+  },
   "metadata": {}
 }
 ```
 
-`direction` 和 `weight` 目前主要作为研究语义保留；v0.1 的搜索核心直接使用 evaluator 返回的 canonical `score`。
+`score` 仍然负责通用 MAP-Elites / best candidate 排序；`objectives` 则用于 Pareto frontier。
 
 ---
 
-## Step 2：定义 seeds
+# 四层 Mutation
 
-`seeds.json`：
+统一抽象：
 
-```json
-[
-  {
-    "parameter_a": 4,
-    "parameter_b": 7,
-    "representation": "direct"
-  }
-]
+```text
+Level 1  Local Mutation
+Level 2  Structural Mutation
+Level 3  Algebraic Mutation
+Level 4  Representation Mutation
 ```
 
-Candidate payload 的结构由你的领域决定。
-
----
-
-## Step 3：实现 evaluator
-
-Evaluator 从 stdin 读取一个 JSON candidate，并向 stdout 输出一个 JSON result。
-
-```python
-import json
-import sys
-
-candidate = json.load(sys.stdin)
-
-# 1. hard constraint
-valid = candidate["parameter_a"] > 0
-
-if not valid:
-    print(json.dumps({
-        "valid": False,
-        "score": None,
-        "diagnostics": {"reason": "parameter_a must be positive"}
-    }))
-    raise SystemExit(0)
-
-# 2. domain metrics
-quality = candidate["parameter_a"] * candidate["parameter_b"]
-
-# 3. canonical score: larger is always better
-score = float(quality)
-
-print(json.dumps({
-    "valid": True,
-    "score": score,
-    "metrics": {"quality": quality},
-    "behavior": {
-        "representation": candidate.get("representation", "direct")
-    },
-    "diagnostics": {}
-}))
-```
-
----
-
-## Step 4：按需实现领域 Mutation
+自定义：
 
 ```python
 from research_evolve.mutation import FourLevelMutator
@@ -354,19 +516,15 @@ from research_evolve.mutation import FourLevelMutator
 
 class MyDomainMutator(FourLevelMutator):
     def local(self, payload, rng):
-        payload["parameter_a"] += rng.choice([-1, 1])
         return payload
 
     def structural(self, payload, rng):
-        # 改变结构级参数
         return payload
 
     def algebraic(self, payload, rng):
-        # 使用领域代数变换
         return payload
 
     def representation(self, payload, rng):
-        # 改变问题表示
         return payload
 ```
 
@@ -380,74 +538,61 @@ research-evolve run \
   --mutator my_domain.mutations:MyDomainMutator
 ```
 
+qLDPC 内置 mutator 对应：
+
+- Local：移动一个 circulant shift
+- Structural：增删 shift 或改变小规模 circulant size
+- Algebraic：应用模环上的 affine/unit 变换
+- Representation：circulant ↔ polynomial 表示切换
+
 ---
 
-# qLDPC 接入建议
+# Candidate DB
 
-ResearchEvolve 很适合把 qLDPC 作为第一个真实 domain pack。
+SQLite 保存：
 
-推荐 candidate：
+- payload
+- parent IDs
+- mutation level
+- generation
+- valid / canonical score
+- metrics
+- behavior
+- diagnostics
 
-```json
-{
-  "family": "lifted_product",
-  "representation": "group_algebra",
-  "lift": 31,
-  "generators_a": [1, 4, 9],
-  "generators_b": [2, 7, 11]
-}
-```
+因此最佳结果不是一个孤立 JSON，而可以向上追溯整个 evolutionary lineage。
 
-推荐 evaluator cascade：
+---
+
+# Research Graph
+
+当前自动记录：
 
 ```text
-Candidate
-   ↓
-Syntax / parameter validation
-   ↓
-construct Hx / Hz
-   ↓
-CSS commutation check
-   ↓
-GF(2) rank → n, k
-   ↓
-cheap distance estimate
-   ↓
-BP-OSD
-   ↓
-MILP exact distance for elites
+Problem
+  └─ investigates → Candidate A
+                         ├─ evaluated_as → Evaluation A
+                         └─ mutated_to   → Candidate B
+                                              └─ evaluated_as → Evaluation B
 ```
 
-最终 evaluator 可以统一返回：
+后续会扩展：
 
-```json
-{
-  "valid": true,
-  "score": 0.82,
-  "metrics": {
-    "n": 360,
-    "k": 24,
-    "distance_estimate": 18,
-    "rate": 0.0667
-  },
-  "behavior": {
-    "family": "lifted_product",
-    "representation": "group_algebra",
-    "symmetry": "cyclic"
-  },
-  "diagnostics": {
-    "css_commutes": true
-  }
-}
+```text
+Hypothesis
+Experiment
+Conjecture
+Counterexample
+Lemma
+Proof
+Verification
 ```
 
-对 qLDPC 来说，建议 behavior dimensions 不只放 score，而是放 `family / representation / symmetry / complexity bucket` 等特征，让 MAP-Elites 主动保存不同数学思想。
+Research Graph 负责“研究进展与因果 lineage”；普通向量 RAG 以后负责“文献和外部知识检索”，二者职责不同。
 
 ---
 
 # Python API
-
-CLI 只是最薄的一层入口，也可以直接嵌入 Agent / MCP / ChatGPT Skill：
 
 ```python
 from research_evolve.engine import ResearchEngine
@@ -458,61 +603,119 @@ spec = ResearchSpec.from_dict(...)
 with ResearchEngine(spec, workspace=".researchevolve/my-run") as engine:
     summary = engine.run(
         seed_payloads=[{"x": 0}],
-        evaluator_path="evaluator.py",
+        evaluator_paths=[
+            "evaluators/constraints.py",
+            "evaluators/exact.py",
+        ],
     )
 
 print(summary.to_dict())
 ```
 
-这也是后续接 LLM Explorer、Research Director、MCP Server 和 Web UI 的主要入口。
+Resume：
+
+```python
+with ResearchEngine(spec, workspace=".researchevolve/my-run") as engine:
+    summary = engine.run(
+        seed_payloads=seeds,
+        evaluator_paths=evaluators,
+        resume=True,
+    )
+```
 
 ---
 
-# 测试
+# 测试与 CI
+
+本地：
 
 ```bash
 pytest -q
 ```
 
+GitHub Actions 会在 PR 上测试：
+
+- Python 3.10
+- Python 3.12
+- pytest
+- target42 CLI smoke test
+
 当前测试覆盖：
 
-- ResearchSpec validation
+- ResearchSpec / SearchPolicy validation
 - Candidate DB round-trip
 - MAP-Elites diversity
-- 四层 mutation 基本契约
+- Pareto dominance
+- Novelty behavior distance
+- 四层 mutation
+- Evaluator Cascade short-circuit
+- evaluator timeout / protocol path
 - Research Graph edges
-- Engine end-to-end integration
+- Engine end-to-end
+- checkpoint / resume
+- resume input fingerprint protection
+- qLDPC small-code parameters and exact distance reference
 
 ---
 
-# v0.1 边界
+# 版本路线
 
-当前版本已经具备一个可运行的 evolutionary research harness，但还没有试图一次性完成所有“自主数学家”能力。
-
-**已经实现：**
+## v0.1 — Research Harness Foundation
 
 ```text
 ResearchSpec
 Hidden evaluator protocol
 Candidate DB
-MAP-Elites archive
-Island populations + migration
-Four-level mutation abstraction
+MAP-Elites
+Island populations
+Four-level mutation
 Research Graph
 CLI
-Runnable demo
-Tests
 ```
 
-**后续路线：**
+## v0.2 — Search Quality & Reproducibility
 
 ```text
-v0.2  Evaluator cascade + Pareto / novelty + checkpoints
-v0.3  LLM Explorer / mutation proposal / experiment agents
-v0.4  Conjecture + counterexample loop
-v0.5  Proof planner / prover / verifier
-v0.6  Lean / symbolic formal verification
-v1.0  Autonomous Mathematical Research Lab
+Evaluator Cascade
+Pareto Archive
+Novelty Search
+Checkpoint / Resume
+Reproducibility Manifest
+Domain Pack interface
+qLDPC benchmark
+GitHub Actions CI
+```
+
+## v0.3 — LLM-guided Evolution
+
+计划：
+
+```text
+LLM Explorer
+Mutation Proposal Agent
+Idea Genome
+Semantic Crossover
+Prompt / model adapters
+Experiment budget accounting
+```
+
+## v0.4 — Scientific Reasoning Loop
+
+```text
+Observation → Conjecture
+Counterexample search
+Hypothesis refinement
+Literature grounding
+```
+
+## v0.5+
+
+```text
+Proof planner
+Independent prover / verifier
+Lean / symbolic verification
+Research report generation
+Autonomous Mathematical Research Lab
 ```
 
 长期目标不是做一个巨大的数学 Prompt，而是形成：
@@ -529,4 +732,4 @@ Structured research memory
 Independent verification
 ```
 
-让数学研究从“一次回答”变成一个可以持续搜索、积累、验证和复现的研究过程。
+让数学研究从“一次回答”变成一个可以持续搜索、积累、恢复、验证和复现的研究过程。
