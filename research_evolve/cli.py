@@ -12,8 +12,12 @@ from .conjectures import ConjectureMemory
 from .domain import DomainPack, load_domain_pack
 from .engine import ResearchEngine
 from .explorer import CommandExplorer
+from .formal import FormalMemory
+from .formal_agents import CommandFormalizer, CommandFormalRepairer
+from .formal_pipeline import FormalPipeline
 from .graph import ResearchGraph
 from .ideas import IdeaMemory
+from .lean_kernel import LeanKernel
 from .mutation import FourLevelMutator
 from .proof_agents import CommandProofPlanner, CommandProofVerifier, CommandProver
 from .proof_pipeline import ProofPipeline
@@ -63,7 +67,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
             "novelty_k": 5,
             "migration_interval": 5,
             "migrants_per_island": 1,
-            "checkpoint_interval": 1
+            "checkpoint_interval": 1,
         },
         "explorer": {
             "enabled": False,
@@ -71,7 +75,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
             "proposals_per_interval": 2,
             "context_candidates": 8,
             "feedback_items": 12,
-            "timeout_seconds": 60
+            "timeout_seconds": 60,
         },
         "conjecture": {
             "enabled": False,
@@ -82,7 +86,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
             "context_conjectures": 12,
             "counterexample_trials": 8,
             "min_evidence": 3,
-            "timeout_seconds": 60
+            "timeout_seconds": 60,
         },
         "metadata": {},
     }
@@ -158,6 +162,31 @@ def _cmd_prove(args: argparse.Namespace) -> int:
             max_lemmas=args.max_lemmas,
             evidence_context=args.evidence_context,
             min_verifier_confidence=args.min_verifier_confidence,
+        ) as pipeline:
+            summary = pipeline.run()
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps(summary.to_dict(), indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_formalize(args: argparse.Namespace) -> int:
+    formalizer = CommandFormalizer(args.formalizer_command, timeout_seconds=args.actor_timeout)
+    repairer = (
+        CommandFormalRepairer(args.repairer_command, timeout_seconds=args.actor_timeout)
+        if args.repairer_command
+        else None
+    )
+    kernel = LeanKernel(args.lean_command, timeout_seconds=args.kernel_timeout)
+    try:
+        with FormalPipeline(
+            args.workspace,
+            formalizer,
+            kernel,
+            repairer,
+            max_targets=args.max_targets,
+            max_repairs=args.max_repairs,
+            evidence_context=args.evidence_context,
         ) as pipeline:
             summary = pipeline.run()
     except ValueError as exc:
@@ -243,8 +272,23 @@ def _cmd_proof_memory(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_formal_memory(args: argparse.Namespace) -> int:
+    memory = FormalMemory(Path(args.workspace) / "formal.sqlite3")
+    try:
+        if args.memory_kind == "specs":
+            data = memory.list_specs(args.limit)
+        elif args.memory_kind == "artifacts":
+            data = memory.list_artifacts(args.limit)
+        else:
+            data = memory.list_kernel_runs(args.limit)
+    finally:
+        memory.close()
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="research-evolve", description="ResearchEvolve v0.5 research harness")
+    parser = argparse.ArgumentParser(prog="research-evolve", description="ResearchEvolve v0.6 research harness")
     sub = parser.add_subparsers(dest="command", required=True)
 
     init = sub.add_parser("init", help="write a ResearchSpec JSON template")
@@ -277,6 +321,18 @@ def build_parser() -> argparse.ArgumentParser:
     prove.add_argument("--min-verifier-confidence", type=float, default=0.7)
     prove.set_defaults(func=_cmd_prove)
 
+    formalize = sub.add_parser("formalize", help="run the v0.6 Lean formalization/kernel/repair pipeline")
+    formalize.add_argument("--workspace", default=".researchevolve/run")
+    formalize.add_argument("--formalizer-command", required=True)
+    formalize.add_argument("--repairer-command")
+    formalize.add_argument("--lean-command", default="lean")
+    formalize.add_argument("--actor-timeout", type=float, default=60.0)
+    formalize.add_argument("--kernel-timeout", type=float, default=30.0)
+    formalize.add_argument("--max-targets", type=int, default=4)
+    formalize.add_argument("--max-repairs", type=int, default=2)
+    formalize.add_argument("--evidence-context", type=int, default=24)
+    formalize.set_defaults(func=_cmd_formalize)
+
     inspect = sub.add_parser("inspect", help="show highest canonical-score valid candidates")
     inspect.add_argument("--workspace", default=".researchevolve/run")
     inspect.add_argument("--limit", type=int, default=10)
@@ -299,6 +355,10 @@ def build_parser() -> argparse.ArgumentParser:
     proof_manifest = sub.add_parser("proof-manifest", help="show the v0.5 proof pipeline manifest")
     proof_manifest.add_argument("--workspace", default=".researchevolve/run")
     proof_manifest.set_defaults(func=_cmd_json_artifact, artifact="proof_manifest.json", limit=None)
+
+    formal_manifest = sub.add_parser("formal-manifest", help="show the v0.6 formal verification manifest")
+    formal_manifest.add_argument("--workspace", default=".researchevolve/run")
+    formal_manifest.set_defaults(func=_cmd_json_artifact, artifact="formal_manifest.json", limit=None)
 
     ideas = sub.add_parser("ideas", help="show recent structured Idea Genomes")
     ideas.add_argument("--workspace", default=".researchevolve/run")
@@ -335,6 +395,16 @@ def build_parser() -> argparse.ArgumentParser:
         proof_memory.add_argument("--workspace", default=".researchevolve/run")
         proof_memory.add_argument("--limit", type=int, default=20)
         proof_memory.set_defaults(func=_cmd_proof_memory, memory_kind=memory_kind)
+
+    for command, help_text, memory_kind in [
+        ("formal-specs", "show frozen Lean formalization specifications", "specs"),
+        ("formal-artifacts", "show generated/repaired Lean proof sources", "artifacts"),
+        ("kernel-runs", "show Lean compiler/kernel results", "kernel_runs"),
+    ]:
+        formal_memory = sub.add_parser(command, help=help_text)
+        formal_memory.add_argument("--workspace", default=".researchevolve/run")
+        formal_memory.add_argument("--limit", type=int, default=20)
+        formal_memory.set_defaults(func=_cmd_formal_memory, memory_kind=memory_kind)
     return parser
 
 

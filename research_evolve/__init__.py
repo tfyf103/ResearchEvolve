@@ -1,6 +1,7 @@
 """ResearchEvolve public API."""
 
 from .conjectures import Conjecture, Counterexample, Observation, Predicate, ValueRef
+from .formal import FormalArtifact, FormalizationSpec, KernelResult, LeanDiagnostic
 from .ideas import IdeaGenome, ResearchProposal, SemanticPatch
 from .proofs import (
     LemmaSpec,
@@ -42,5 +43,9 @@ __all__ = [
     "ProofArtifact",
     "ProofReview",
     "VerificationIssue",
+    "FormalizationSpec",
+    "FormalArtifact",
+    "KernelResult",
+    "LeanDiagnostic",
 ]
-__version__ = "0.5.0"
+__version__ = "0.6.0"

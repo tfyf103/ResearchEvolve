@@ -1,104 +1,232 @@
 # ResearchEvolve Security Model
 
-ResearchEvolve separates **idea/conjecture/proof generation** from **truth evaluation and verification**, but the default local CLI is a research/development harness rather than a hardened multi-tenant sandbox.
+ResearchEvolve separates **idea/conjecture/proof generation** from **truth evaluation and verification**. The default CLI is a research/development harness, not a hardened multi-tenant sandbox.
 
-## Trust boundaries
+## Evaluator
 
-### Evaluator
+`HiddenEvaluator` / `EvaluatorCascade` use separate JSON-speaking processes. This creates a protocol boundary, not OS isolation. A process running as the same user may still inspect files, environment variables, or other local processes.
 
-`HiddenEvaluator` / `EvaluatorCascade` execute evaluator scripts in separate Python processes and communicate over JSON stdin/stdout.
+## Explorer and Conjecturer
 
-This provides a narrow protocol boundary, independent evaluator failure handling, and a deployment contract that can later be moved behind a grader service. It does **not** by itself prevent another process running as the same OS user from reading evaluator files or inspecting the local environment.
+`CommandExplorer` and `CommandConjecturer` receive summarized research state through JSON. ResearchEvolve does not intentionally send evaluator source to them, but local subprocesses are not security sandboxes.
 
-### Explorer and Conjecturer
+## v0.4 Predicate DSL
 
-`CommandExplorer` and `CommandConjecturer` launch external processes and receive summarized research state over JSON stdin. ResearchEvolve does not intentionally include evaluator source code in those requests.
+Conjecturers submit a restricted `Predicate`, not Python code. Predicates may reference `score`, `payload`, `metrics`, or `behavior` and use only `lt/le/gt/ge/eq/ne` comparisons. ResearchEvolve does not use `eval` or `exec` to evaluate them.
 
-However, an untrusted model wrapper running under the same OS user may still be able to inspect files, processes, environment variables, or other machine resources outside the JSON protocol. The default command adapters are therefore **protocol boundaries, not security sandboxes**.
+Finite tests produce empirical statuses only. They never produce a formal theorem status.
 
-### v0.4 predicate DSL
+## v0.5 Natural-language Proof Pipeline
 
-Conjecturers do not submit Python expressions. They submit a restricted `Predicate` composed of:
+The v0.5 pipeline freezes a `ProofSpec`, validates an acyclic lemma graph, checks proof coverage and assumptions, and separates Prover from Verifier implementation identity.
 
-- a `ValueRef` to `score`, `payload`, `metrics`, or `behavior`;
-- one comparison operator: `lt`, `le`, `gt`, `ge`, `eq`, or `ne`;
-- a JSON constant or another `ValueRef`.
-
-ResearchEvolve does not call `eval`, `exec`, or dynamically import code to interpret conjecture predicates. Unsupported or unresolvable comparisons are treated as non-testable rather than executed.
-
-A finite set of successful tests only yields `empirically_supported`; the v0.4 loop never upgrades empirical evidence to `proved`.
-
-### v0.5 Proof Planner / Prover / Verifier
-
-`CommandProofPlanner`, `CommandProver`, and `CommandProofVerifier` are also process-level JSON protocol adapters. They are **not** hardened sandboxes.
-
-The v0.5 proof pipeline adds several integrity controls:
-
-- the target is frozen into a `ProofSpec` before planning begins;
-- a `ProofPlan` must form an acyclic lemma dependency graph;
-- a `ProofArtifact` must provide an argument for every planned lemma;
-- assumptions used by the proof must be a subset of the frozen `ProofSpec.assumptions`;
-- the verifier must have a different implementation identity from the prover;
-- an external verifier cannot force acceptance when it reports an `error` issue;
-- a claimed `verified` review below the configured confidence threshold becomes `inconclusive`;
-- the pipeline re-tests the conjecture against all already evaluated valid candidates before starting the prover.
-
-The strongest v0.5 success status is **`verified_natural_language`**. It means an independent verifier accepted the structured natural-language proof artifact under the configured policy. It does **not** mean formal verification by Lean, Coq, Isabelle, HOL, SMT, or another proof assistant.
-
-Do not present `verified_natural_language` as a formally proved theorem. Formal verification belongs to a later stage and should have a separate status and artifact type.
-
-## Recommended production deployment
-
-For untrusted or autonomous agents, isolate at least these roles:
+Its strongest status is:
 
 ```text
-┌──────────────────────────┐
-│ Explorer / Conjecturer   │
-│ no evaluator access      │
-└────────────┬─────────────┘
-             │ structured proposals / predicates
-             ▼
-┌──────────────────────────┐
-│ Research Orchestrator    │
-│ archive + scheduling     │
-└────────────┬─────────────┘
-             │ candidate only
-             ▼
-┌──────────────────────────┐
-│ Private Grader           │
-│ evaluator mounted        │
-│ agent cannot read it     │
-└────────────┬─────────────┘
-             │ EvaluationResult
-             ▼
-┌──────────────────────────┐
-│ Prover worker            │
-│ no verifier internals    │
-└────────────┬─────────────┘
-             │ ProofArtifact
-             ▼
-┌──────────────────────────┐
-│ Independent verifier     │
-│ adversarial review       │
-└────────────┬─────────────┘
-             │ ProofReview
-             ▼
-        Research state
+verified_natural_language
 ```
 
-Use containers, VMs, remote workers, or another isolation mechanism appropriate to the threat model. The private grader should mount evaluator code read-only and expose only the narrow candidate/result protocol. The prover and verifier should use different workers, model configurations, or implementations when independent verification matters.
+That is not Lean/Coq/Isabelle/kernel verification.
+
+## v0.6 Formalizer / Lean Gate
+
+v0.6 executes generated Lean theorem bodies, so it adds a stronger trust boundary.
+
+### Frozen formal contract
+
+A Formalizer or Repairer is untrusted. It does not choose the theorem target.
+
+`ResearchSpec.metadata.formal_contracts` freezes:
+
+- exact natural-language conjecture statement;
+- exact normalized v0.4 machine `Predicate`;
+- Lean backend;
+- Lean toolchain;
+- imports;
+- trusted preamble definitions;
+- theorem name;
+- complete theorem signature;
+- axiom policy.
+
+Matching both the statement and normalized predicate prevents two conjectures with identical prose but different executable semantics from reusing the same Lean theorem contract.
+
+The theorem signature must not contain `:=`; only the theorem body is generated.
+
+### Trusted preamble
+
+Project definitions that affect theorem meaning belong in the frozen `preamble` or pinned imports. They are trusted research inputs.
+
+Do not let a model define the object it is supposed to prove facts about. For example, if the theorem concerns `distanceTo42`, its Lean definition should be frozen before the Formalizer runs.
+
+### Generated top-level helpers disabled
+
+v0.6 rejects non-empty model-supplied `helper_source`. The model may use local `have` / `show` inside the theorem body, but cannot inject arbitrary global declarations before the target theorem.
+
+This reduces attacks or accidental semantic changes through notation, namespaces, instances, syntax, macros, or name resolution.
+
+### Conservative source gate
+
+Before Lean runs, ResearchEvolve rejects generated source containing:
+
+```text
+sorry
+admit
+axiom
+unsafe
+extern
+opaque
+run_tac
+elab
+macro
+syntax
+#eval
+#run
+```
+
+This is defense in depth, not a proof of sandbox safety.
+
+### Toolchain pinning
+
+Every formal contract freezes a Lean toolchain.
+
+For version detection and theorem compilation, v0.6 creates a temporary Lean working directory containing the frozen:
+
+```text
+lean-toolchain
+```
+
+An Elan-managed `lean` proxy therefore selects the requested project toolchain even though the generated source lives outside the repository root. ResearchEvolve additionally checks `lean --version` against the frozen contract version.
+
+A missing/mismatched environment yields `environment_error`, not theorem success or theorem rejection.
+
+### Kernel and axiom gate
+
+Successful elaboration alone is not enough. ResearchEvolve appends:
+
+```lean
+#print axioms theoremName
+```
+
+and audits the result.
+
+Default allowed Lean axioms:
+
+```text
+propext
+Classical.choice
+Quot.sound
+```
+
+Dependencies such as the following block `formal_verified` under the default policy:
+
+```text
+sorryAx
+Lean.trustCompiler
+Custom.someAxiom
+```
+
+The v0.6 success condition is:
+
+```text
+exact frozen statement + machine predicate mapping
++ frozen imports/preamble/theorem signature
++ accepted generated theorem body
++ requested Lean toolchain selected
++ Lean version matches
++ Lean exits successfully
++ no Lean error diagnostics
++ #print axioms is parseable
++ no disallowed axiom dependency
+= formal_verified
+```
+
+`formal_verified` is therefore a statement about a **specific frozen Lean theorem**. It does not automatically prove that the informal research statement was translated correctly; the formal contract itself remains an auditable modeling assumption.
+
+## Adversarial Lean proof limitation
+
+Lean tactics and elaboration are executable computation. An unreviewed AI-generated proof should be treated as potentially malicious code, not merely as text containing logical mistakes.
+
+The v0.6 source gate narrows the obvious attack surface, but ordinary `lean` execution plus `#print axioms` is not the highest-assurance validation route against a determined adversary.
+
+For higher-risk settings, later deployments should add layers such as:
+
+```text
+isolated build sandbox
+→ lean4checker --fresh
+→ trusted challenge statement comparison
+→ comparator / independent external checker
+```
+
+and should keep the trusted theorem statement outside the untrusted proof-generation environment.
+
+## Recommended production separation
+
+```text
+Explorer / Conjecturer
+        │
+        ▼
+Research Orchestrator
+        │
+        ├──────────────► Private Evaluator / Grader
+        │
+        ▼
+Natural-language Prover
+        │
+        ▼
+Independent NL Verifier
+        │
+        ▼
+Formalizer / Repairer
+        │   theorem body only
+        ▼
+Isolated Lean Worker
+        │   kernel + axiom result
+        ▼
+Optional external re-checker
+        │
+        ▼
+Research state
+```
+
+For autonomous/untrusted Formalizers, isolate Lean in a container, VM, or remote worker with:
+
+- no model/provider secrets;
+- no private evaluator source;
+- read-only trusted formal contracts/libraries where practical;
+- restricted filesystem access;
+- CPU, memory, process, and wall-time limits;
+- disabled or restricted network access;
+- pinned Lean and dependencies.
+
+The local subprocess boundary is not sufficient containment for hostile code.
 
 ## Secrets
 
-Do not place provider API keys inside candidate payloads, ResearchSpec metadata, Explorer proposals, Conjecturer metadata, proof artifacts, proof reviews, or command-line arguments.
+Do not put API keys or other secrets in:
 
-Prefer environment variables or a secret manager for provider credentials. Command adapter identities in `manifest.json` / `proof_manifest.json` are hash-based; wrappers should still avoid embedding secrets in argv. Explorer metadata is persisted in `ideas.sqlite3`, Conjecturer metadata in `conjectures.sqlite3`, and proof metadata in `proofs.sqlite3`, so none of those fields should contain secrets.
+- candidate payloads;
+- ResearchSpec metadata;
+- Explorer / Conjecturer metadata;
+- proof artifacts / reviews;
+- formal contracts;
+- generated Lean source;
+- command-line arguments.
 
-## Generated code
+Use environment variables or a secret manager for provider credentials. ResearchEvolve persists metadata in SQLite journals and manifests; assume persisted metadata can be inspected.
 
-v0.3 semantic proposals use restricted top-level JSON patch/crossover operations. v0.4 conjectures use the restricted predicate DSL above. v0.5 proof artifacts are stored as text/structured JSON and are not executed as code by the proof pipeline.
+## Stale-result invalidation
 
-Future code-generation and formal-proof execution features should run untrusted generated programs in a separate sandbox with explicit CPU, memory, wall-time, filesystem, and network limits.
+A later counterexample can invalidate a previously accepted natural-language proof. v0.6 propagates this into formal records:
+
+```text
+FormalizationSpec → invalidated
+FormalArtifact     → invalidated
+KernelResult       → invalidated
+```
+
+Historical kernel information is retained for audit, but it no longer acts as the active formal certificate for the current research lineage.
+
+This is necessary because the Lean kernel may have correctly proved a frozen theorem while the upstream mapping between that theorem and the current research claim has become stale.
 
 ## Reporting
 
