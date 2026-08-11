@@ -261,7 +261,7 @@ class LeanKernel:
                 source_path = Path(temp_dir) / "Main.lean"
                 source_path.write_text(source, encoding="utf-8")
                 completed = subprocess.run(
-                    [*self.command, str(source_path)],
+                    [*self.command, source_path.name],
                     text=True,
                     capture_output=True,
                     timeout=self.timeout_seconds,
