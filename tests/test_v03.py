@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,17 @@ def test_semantic_mutation_and_crossover_are_deterministic() -> None:
     assert crossed == {"x": 9, "representation": "graph", "shape": [4, 1]}
 
 
+def test_semantic_crossover_rejects_missing_secondary_field() -> None:
+    proposal = ResearchProposal(
+        kind="semantic_crossover",
+        parent_ids=["a", "b"],
+        inherit_from_secondary=["missing"],
+        genome=IdeaGenome(construction="bad-crossover"),
+    )
+    with pytest.raises(ValueError, match="does not contain"):
+        realize_proposal(proposal, {"a": {"missing": 1}, "b": {"other": 2}})
+
+
 def test_idea_memory_records_outcomes(tmp_path: Path) -> None:
     memory = IdeaMemory(tmp_path / "ideas.sqlite3")
     proposal = _proposal("parent")
@@ -69,6 +81,22 @@ def test_idea_memory_records_outcomes(tmp_path: Path) -> None:
     assert feedback[0]["candidate_id"] == "candidate"
     assert feedback[0]["score"] == 3.5
     assert ideas[0]["id"] == proposal.genome.id
+
+
+def test_idea_memory_prunes_partial_generations(tmp_path: Path) -> None:
+    memory = IdeaMemory(tmp_path / "ideas.sqlite3")
+    keep = _proposal("p1", 4)
+    drop = _proposal("p2", 6)
+    memory.record_proposal(keep, generation=1)
+    memory.record_proposal(drop, generation=2)
+    removed = memory.prune_after_generation(1)
+    remaining = memory.list_proposals(10)
+    ideas = memory.list_ideas(10)
+    memory.close()
+
+    assert removed == 1
+    assert [item["proposal_id"] for item in remaining] == [keep.id]
+    assert [item["id"] for item in ideas] == [keep.genome.id]
 
 
 def test_command_explorer_parses_strict_json_protocol(tmp_path: Path) -> None:
@@ -89,7 +117,7 @@ print(json.dumps({'proposals': [{
 """.strip(),
         encoding="utf-8",
     )
-    explorer = CommandExplorer(["python", str(script)], timeout_seconds=5)
+    explorer = CommandExplorer([sys.executable, str(script)], timeout_seconds=5)
     context = ResearchContext(
         problem="demo",
         generation=1,
@@ -101,6 +129,16 @@ print(json.dumps({'proposals': [{
     assert proposals[0].parent_ids == ["p1"]
     assert proposals[0].patch.set_values["x"] == 5
     assert "move x" in proposals[0].rationale
+
+
+def test_command_explorer_identity_changes_with_wrapper_contents(tmp_path: Path) -> None:
+    script = tmp_path / "explorer.py"
+    script.write_text("print('one')", encoding="utf-8")
+    first = CommandExplorer([sys.executable, str(script)]).name
+    script.write_text("print('two')", encoding="utf-8")
+    second = CommandExplorer([sys.executable, str(script)]).name
+    assert first != second
+    assert str(script) not in first
 
 
 class DemoExplorer:
