@@ -41,13 +41,19 @@
     "formal_contracts": [
       {
         "conjecture_statement": "Distance to 42 is always non-negative for evaluated candidates.",
+        "conjecture_predicate": {
+          "left": {"source": "metrics", "key": "distance_to_42"},
+          "operator": "ge",
+          "right_constant": 0
+        },
         "backend": "lean4",
         "toolchain": "leanprover/lean4:v4.30.0",
         "theorem_name": "distance_to_42_nonnegative",
         "theorem_signature": "theorem distance_to_42_nonnegative (x : Int) : 0 ≤ Int.natAbs (x - 42)",
         "imports": [],
+        "preamble": "",
         "metadata": {
-          "semantic_mapping": "The demo formalizes evaluated integer x as Lean Int and abs(x-42) as Int.natAbs (x-42)."
+          "semantic_mapping": "The v0.4 metric predicate metrics.distance_to_42 >= 0 is represented for integer x by the Lean theorem 0 ≤ Int.natAbs (x - 42)."
         }
       }
     ]
