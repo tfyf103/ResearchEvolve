@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import re
 import shlex
 import subprocess
@@ -18,6 +17,10 @@ class LeanKernel:
     `formal_verified` requires a frozen target, conservative source gate, exact
     toolchain match, successful Lean elaboration/kernel checking, and an audited
     `#print axioms` result containing only the FormalizationSpec allowlist.
+
+    Each Lean subprocess runs in a temporary directory containing the frozen
+    `lean-toolchain`, so Elan proxies select the contract toolchain even though
+    the generated source is outside the repository root.
     """
 
     _FORBIDDEN_WORDS = (
@@ -67,13 +70,8 @@ class LeanKernel:
         return match.group(1) if match else None
 
     @staticmethod
-    def _toolchain_env(toolchain: str) -> dict[str, str]:
-        env = os.environ.copy()
-        # Elan honors ELAN_TOOLCHAIN as an explicit override. For direct Lean
-        # binaries this extra variable is harmless, while Elan proxies keep the
-        # frozen toolchain even after ResearchEvolve changes cwd to a temp dir.
-        env["ELAN_TOOLCHAIN"] = toolchain
-        return env
+    def _write_toolchain(directory: str | Path, toolchain: str) -> None:
+        Path(directory, "lean-toolchain").write_text(toolchain.strip() + "\n", encoding="utf-8")
 
     @classmethod
     def _forbidden_token(cls, source: str) -> str | None:
@@ -118,16 +116,25 @@ class LeanKernel:
             return [], None
         return [item.strip() for item in raw.split(",") if item.strip()], None
 
-    def _detect_version(self, toolchain: str) -> tuple[str | None, str, str, int | None, str | None]:
+    def _detect_version(
+        self,
+        toolchain: str,
+        *,
+        workspace: str | Path,
+    ) -> tuple[str | None, str, str, int | None, str | None]:
+        root = Path(workspace)
+        root.mkdir(parents=True, exist_ok=True)
         try:
-            completed = subprocess.run(
-                [*self.command, "--version"],
-                text=True,
-                capture_output=True,
-                timeout=self.timeout_seconds,
-                check=False,
-                env=self._toolchain_env(toolchain),
-            )
+            with tempfile.TemporaryDirectory(prefix="researchevolve-lean-version-", dir=root) as temp_dir:
+                self._write_toolchain(temp_dir, toolchain)
+                completed = subprocess.run(
+                    [*self.command, "--version"],
+                    text=True,
+                    capture_output=True,
+                    timeout=self.timeout_seconds,
+                    check=False,
+                    cwd=temp_dir,
+                )
         except FileNotFoundError as exc:
             return None, "", str(exc), None, "lean-command-not-found"
         except subprocess.TimeoutExpired as exc:
@@ -220,7 +227,10 @@ class LeanKernel:
             )
             return result, source
 
-        detected, version_stdout, version_stderr, version_code, version_error = self._detect_version(spec.toolchain)
+        detected, version_stdout, version_stderr, version_code, version_error = self._detect_version(
+            spec.toolchain,
+            workspace=workspace,
+        )
         if version_error is not None or detected != expected:
             message = (
                 f"Lean version mismatch: expected {expected}, detected {detected}"
@@ -247,6 +257,7 @@ class LeanKernel:
         root.mkdir(parents=True, exist_ok=True)
         try:
             with tempfile.TemporaryDirectory(prefix="researchevolve-lean-", dir=root) as temp_dir:
+                self._write_toolchain(temp_dir, spec.toolchain)
                 source_path = Path(temp_dir) / "Main.lean"
                 source_path.write_text(source, encoding="utf-8")
                 completed = subprocess.run(
@@ -256,7 +267,6 @@ class LeanKernel:
                     timeout=self.timeout_seconds,
                     check=False,
                     cwd=temp_dir,
-                    env=self._toolchain_env(spec.toolchain),
                 )
         except FileNotFoundError as exc:
             result = KernelResult(
