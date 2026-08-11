@@ -1,0 +1,20 @@
+{
+  "name": "target-42-demo",
+  "problem": "Search for scalar constructions whose x value is as close as possible to 42 while preserving behavioral diversity.",
+  "domain": "generic-demo",
+  "mode": "metric_search",
+  "objectives": [
+    {"name": "closeness_to_42", "direction": "maximize", "weight": 1.0}
+  ],
+  "constraints": [],
+  "behavior_dimensions": ["representation", "magnitude_bucket"],
+  "budget": {
+    "generations": 8,
+    "population_size": 24,
+    "evaluator_timeout_seconds": 5,
+    "seed": 7
+  },
+  "metadata": {
+    "purpose": "minimal end-to-end ResearchEvolve demonstration"
+  }
+}
