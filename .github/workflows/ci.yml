@@ -21,7 +21,7 @@ jobs:
         run: python -m pip install -e ".[dev]"
       - name: Test
         run: pytest -q
-      - name: CLI smoke test
+      - name: v0.2 CLI smoke test
         run: |
           research-evolve run \
             --spec examples/target42/spec.json \
@@ -30,3 +30,14 @@ jobs:
             --workspace .researchevolve/ci-target42 \
             --islands 2
           research-evolve manifest --workspace .researchevolve/ci-target42
+      - name: v0.3 semantic Explorer smoke test
+        run: |
+          research-evolve run \
+            --spec examples/semantic42/spec.json \
+            --evaluator examples/target42/evaluator.py \
+            --seeds examples/semantic42/seeds.json \
+            --explorer-command "python examples/semantic42/explorer.py" \
+            --workspace .researchevolve/ci-semantic42 \
+            --islands 2
+          research-evolve ideas --workspace .researchevolve/ci-semantic42 --limit 2
+          research-evolve proposals --workspace .researchevolve/ci-semantic42 --limit 2
