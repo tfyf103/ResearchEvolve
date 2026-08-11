@@ -29,6 +29,17 @@ class Budget:
 
 
 @dataclass(slots=True)
+class SearchPolicy:
+    """Search-level controls that stay independent from domain mathematics."""
+
+    novelty_probability: float = 0.25
+    novelty_k: int = 5
+    migration_interval: int = 5
+    migrants_per_island: int = 1
+    checkpoint_interval: int = 1
+
+
+@dataclass(slots=True)
 class ResearchSpec:
     """Machine-readable contract for one mathematical research run."""
 
@@ -40,6 +51,7 @@ class ResearchSpec:
     constraints: list[Constraint] = field(default_factory=list)
     behavior_dimensions: list[str] = field(default_factory=list)
     budget: Budget = field(default_factory=Budget)
+    search: SearchPolicy = field(default_factory=SearchPolicy)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
@@ -51,6 +63,16 @@ class ResearchSpec:
             raise ValueError("metric_search/hybrid requires at least one objective")
         if self.budget.generations < 1 or self.budget.population_size < 1:
             raise ValueError("budget values must be positive")
+        if self.budget.evaluator_timeout_seconds <= 0:
+            raise ValueError("evaluator timeout must be positive")
+        if not 0.0 <= self.search.novelty_probability <= 1.0:
+            raise ValueError("novelty_probability must be in [0, 1]")
+        if self.search.novelty_k < 1:
+            raise ValueError("novelty_k must be positive")
+        if self.search.migration_interval < 1 or self.search.migrants_per_island < 1:
+            raise ValueError("migration settings must be positive")
+        if self.search.checkpoint_interval < 1:
+            raise ValueError("checkpoint_interval must be positive")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -66,6 +88,7 @@ class ResearchSpec:
             constraints=[Constraint(**item) for item in data.get("constraints", [])],
             behavior_dimensions=list(data.get("behavior_dimensions", [])),
             budget=Budget(**data.get("budget", {})),
+            search=SearchPolicy(**data.get("search", {})),
             metadata=dict(data.get("metadata", {})),
         )
         spec.validate()

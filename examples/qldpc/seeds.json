@@ -1,0 +1,23 @@
+[
+  {
+    "family": "bicycle",
+    "representation": "circulant",
+    "size": 5,
+    "a_shifts": [0, 1],
+    "b_shifts": [0, 2]
+  },
+  {
+    "family": "bicycle",
+    "representation": "polynomial",
+    "size": 6,
+    "a_shifts": [4, 5],
+    "b_shifts": [1, 3, 4, 5]
+  },
+  {
+    "family": "bicycle",
+    "representation": "circulant",
+    "size": 7,
+    "a_shifts": [3, 5, 6],
+    "b_shifts": [2, 3, 4, 6]
+  }
+]
