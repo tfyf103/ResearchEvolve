@@ -1,74 +1,115 @@
 # ResearchEvolve Security Model
 
-ResearchEvolve separates **idea/conjecture/proof generation** from **truth evaluation and verification**. The default CLI remains a research/development harness, not a hardened multi-tenant sandbox.
+ResearchEvolve separates **idea/conjecture/proof generation** from **truth evaluation and verification**. The default CLI is a research/development harness, not a hardened multi-tenant sandbox.
 
-## Trust boundaries
+## Evaluator
 
-### Evaluator
+`HiddenEvaluator` / `EvaluatorCascade` use separate JSON-speaking processes. This creates a protocol boundary, not OS isolation. A process running as the same user may still inspect files, environment variables, or other local processes.
 
-`HiddenEvaluator` / `EvaluatorCascade` execute evaluator scripts in separate Python processes and communicate over JSON stdin/stdout. This is a narrow protocol boundary, not OS isolation. A process running as the same user may still inspect files, environment variables, processes, or other local resources.
+## Explorer and Conjecturer
 
-### Explorer and Conjecturer
+`CommandExplorer` and `CommandConjecturer` receive summarized research state through JSON. ResearchEvolve does not intentionally send evaluator source to them, but local subprocesses are not security sandboxes.
 
-`CommandExplorer` and `CommandConjecturer` receive summarized research state through JSON. ResearchEvolve does not intentionally send evaluator source code to them, but the subprocess boundary alone does not prevent local filesystem/process inspection.
+## v0.4 Predicate DSL
 
-### v0.4 Predicate DSL
+Conjecturers submit a restricted `Predicate`, not Python code. Predicates may reference `score`, `payload`, `metrics`, or `behavior` and use only `lt/le/gt/ge/eq/ne` comparisons. ResearchEvolve does not use `eval` or `exec` to evaluate them.
 
-Conjecturers submit a restricted `Predicate`, not Python code. It may reference `score`, `payload`, `metrics`, or `behavior`, and only supports `lt/le/gt/ge/eq/ne` comparisons. ResearchEvolve does not call `eval` or `exec` to evaluate conjectures.
+Finite tests produce empirical statuses only. They never produce a formal theorem status.
 
-Finite tests may produce `empirically_supported` or `refuted`; they never produce a formal theorem status.
+## v0.5 Natural-language Proof Pipeline
 
-### v0.5 Proof Planner / Prover / Verifier
+The v0.5 pipeline freezes a `ProofSpec`, validates an acyclic lemma graph, checks proof coverage and assumptions, and separates Prover from Verifier implementation identity.
 
-The natural-language proof pipeline freezes a `ProofSpec`, validates an acyclic lemma plan, checks that every lemma receives an argument, rejects hidden assumptions, and requires the verifier implementation to differ from the prover implementation.
+Its strongest status is:
 
-Its strongest status is `verified_natural_language`. That means an independent configured verifier accepted a natural-language proof artifact. It is **not** Lean/Coq/Isabelle/kernel verification.
+```text
+verified_natural_language
+```
 
-### v0.6 Formalizer / Lean kernel
+That is not Lean/Coq/Isabelle/kernel verification.
 
-v0.6 introduces executable Lean source and therefore adds a stronger trust boundary.
+## v0.6 Formalizer / Lean Gate
 
-A Formalizer or Repairer is **untrusted**. It may only propose a theorem body (`proof_term`). It cannot choose the target theorem declaration. The following are frozen by `ResearchSpec.metadata.formal_contracts` before the actor runs:
+v0.6 executes generated Lean theorem bodies, so it adds a stronger trust boundary.
 
-- exact conjecture statement to match;
+### Frozen formal contract
+
+A Formalizer or Repairer is untrusted. It does not choose the theorem target.
+
+`ResearchSpec.metadata.formal_contracts` freezes:
+
+- exact natural-language conjecture statement;
+- exact normalized v0.4 machine `Predicate`;
 - Lean backend;
 - Lean toolchain;
 - imports;
 - trusted preamble definitions;
 - theorem name;
 - complete theorem signature;
-- allowed axiom policy.
+- axiom policy.
 
-The model-supplied theorem signature is never accepted. `theorem_signature` must not contain `:=`, so the proof body remains the only generated part.
+Matching both the statement and normalized predicate prevents two conjectures with identical prose but different executable semantics from reusing the same Lean theorem contract.
 
-#### v0.6 source gate
+The theorem signature must not contain `:=`; only the theorem body is generated.
 
-Before Lean executes, `LeanKernel` conservatively rejects model output containing escape hatches or metaprogramming surfaces including:
+### Trusted preamble
 
-- `sorry`, `admit`, `axiom`;
-- `unsafe`, `extern`, `opaque`;
-- `run_tac`, `elab`, `macro`, `syntax`;
-- `#eval`, `#run`.
+Project definitions that affect theorem meaning belong in the frozen `preamble` or pinned imports. They are trusted research inputs.
 
-v0.6 also rejects any non-empty model-supplied top-level `helper_source`. Local `have` / `show` steps inside the theorem body remain available. Trusted top-level definitions belong in the frozen `preamble`, not in model output.
+Do not let a model define the object it is supposed to prove facts about. For example, if the theorem concerns `distanceTo42`, its Lean definition should be frozen before the Formalizer runs.
 
-This source scan is intentionally conservative. It is a defense-in-depth policy, not a substitute for the Lean kernel.
+### Generated top-level helpers disabled
 
-#### Toolchain pinning
+v0.6 rejects non-empty model-supplied `helper_source`. The model may use local `have` / `show` inside the theorem body, but cannot inject arbitrary global declarations before the target theorem.
 
-`formal_verified` requires the detected `lean --version` to match the frozen formal contract toolchain. The repository includes a `lean-toolchain` file pinning the integration test environment.
+This reduces attacks or accidental semantic changes through notation, namespaces, instances, syntax, macros, or name resolution.
 
-Changing the source research fingerprint, proof manifest, formal contracts, actor identities, or formal policy changes `formal_manifest.json` and prevents silent mixing of incompatible formal runs.
+### Conservative source gate
 
-#### Axiom audit
+Before Lean runs, ResearchEvolve rejects generated source containing:
 
-Successful Lean elaboration alone is not enough. ResearchEvolve appends:
+```text
+sorry
+admit
+axiom
+unsafe
+extern
+opaque
+run_tac
+elab
+macro
+syntax
+#eval
+#run
+```
+
+This is defense in depth, not a proof of sandbox safety.
+
+### Toolchain pinning
+
+Every formal contract freezes a Lean toolchain.
+
+For version detection and theorem compilation, v0.6 creates a temporary Lean working directory containing the frozen:
+
+```text
+lean-toolchain
+```
+
+An Elan-managed `lean` proxy therefore selects the requested project toolchain even though the generated source lives outside the repository root. ResearchEvolve additionally checks `lean --version` against the frozen contract version.
+
+A missing/mismatched environment yields `environment_error`, not theorem success or theorem rejection.
+
+### Kernel and axiom gate
+
+Successful elaboration alone is not enough. ResearchEvolve appends:
 
 ```lean
 #print axioms theoremName
 ```
 
-and parses the result. By default v0.6 accepts only Lean's standard logical axioms:
+and audits the result.
+
+Default allowed Lean axioms:
 
 ```text
 propext
@@ -76,38 +117,47 @@ Classical.choice
 Quot.sound
 ```
 
-Dependencies such as `sorryAx`, `Lean.trustCompiler`, or custom axioms prevent `formal_verified` unless a future explicit policy intentionally changes that allowlist.
-
-Therefore the v0.6 success condition is approximately:
+Dependencies such as the following block `formal_verified` under the default policy:
 
 ```text
-frozen theorem target
-+ accepted source gate
-+ exact pinned Lean version
-+ Lean exit code 0
-+ no Lean errors
-+ parsed #print axioms output
-+ no disallowed axioms
+sorryAx
+Lean.trustCompiler
+Custom.someAxiom
+```
+
+The v0.6 success condition is:
+
+```text
+exact frozen statement + machine predicate mapping
++ frozen imports/preamble/theorem signature
++ accepted generated theorem body
++ requested Lean toolchain selected
++ Lean version matches
++ Lean exits successfully
++ no Lean error diagnostics
++ #print axioms is parseable
++ no disallowed axiom dependency
 = formal_verified
 ```
 
-`formal_verified` is still relative to the **formal theorem that was frozen**. Mapping an informal research claim to a Lean theorem is a modeling responsibility, which is why `formal_contracts` must be explicit and auditable.
+`formal_verified` is therefore a statement about a **specific frozen Lean theorem**. It does not automatically prove that the informal research statement was translated correctly; the formal contract itself remains an auditable modeling assumption.
 
-### Formal proof execution is still not an OS sandbox
+## Adversarial Lean proof limitation
 
-Lean elaboration and tactics are code execution. Even with v0.6's conservative token gate, the default local process is not a hardened sandbox against a hostile formalizer or malicious dependency/import.
+Lean tactics and elaboration are executable computation. An unreviewed AI-generated proof should be treated as potentially malicious code, not merely as text containing logical mistakes.
 
-For untrusted autonomous formalization, run Lean in an isolated container/VM/remote worker with:
+The v0.6 source gate narrows the obvious attack surface, but ordinary `lean` execution plus `#print axioms` is not the highest-assurance validation route against a determined adversary.
 
-- no provider secrets;
-- no evaluator source;
-- read-only trusted libraries/contracts where practical;
-- restricted filesystem access;
-- CPU, memory, process, and wall-time limits;
-- disabled or restricted network access;
-- a pinned Lean/toolchain and dependency lock.
+For higher-risk settings, later deployments should add layers such as:
 
-Do not treat the local subprocess boundary as sufficient containment.
+```text
+isolated build sandbox
+→ lean4checker --fresh
+→ trusted challenge statement comparison
+→ comparator / independent external checker
+```
+
+and should keep the trusted theorem statement outside the untrusted proof-generation environment.
 
 ## Recommended production separation
 
@@ -127,27 +177,56 @@ Independent NL Verifier
         │
         ▼
 Formalizer / Repairer
-        │   proof term only
+        │   theorem body only
         ▼
 Isolated Lean Worker
-        │   kernel result + axiom audit
+        │   kernel + axiom result
+        ▼
+Optional external re-checker
+        │
         ▼
 Research state
 ```
 
-The Prover and natural-language Verifier should remain independently implemented/configured. The Lean worker should not inherit the model worker's filesystem/secrets by default.
+For autonomous/untrusted Formalizers, isolate Lean in a container, VM, or remote worker with:
+
+- no model/provider secrets;
+- no private evaluator source;
+- read-only trusted formal contracts/libraries where practical;
+- restricted filesystem access;
+- CPU, memory, process, and wall-time limits;
+- disabled or restricted network access;
+- pinned Lean and dependencies.
+
+The local subprocess boundary is not sufficient containment for hostile code.
 
 ## Secrets
 
-Do not put provider API keys or other secrets in candidate payloads, `ResearchSpec.metadata`, Explorer/Conjecturer metadata, proof artifacts, formal contracts, formal artifacts, command-line arguments, or generated Lean source.
+Do not put API keys or other secrets in:
 
-Use environment variables or a secret manager for provider credentials. ResearchEvolve persists metadata in SQLite journals and manifests; assume persisted metadata is inspectable.
+- candidate payloads;
+- ResearchSpec metadata;
+- Explorer / Conjecturer metadata;
+- proof artifacts / reviews;
+- formal contracts;
+- generated Lean source;
+- command-line arguments.
+
+Use environment variables or a secret manager for provider credentials. ResearchEvolve persists metadata in SQLite journals and manifests; assume persisted metadata can be inspected.
 
 ## Stale-result invalidation
 
-A later counterexample can invalidate a previously accepted natural-language proof. v0.6 propagates that staleness into formal records: `FormalizationSpec`, generated artifacts, and historical kernel results are marked `invalidated`, while the original historical result is retained for audit.
+A later counterexample can invalidate a previously accepted natural-language proof. v0.6 propagates this into formal records:
 
-A historical kernel success does not remain an active theorem certificate when its source research/proof lineage is no longer current.
+```text
+FormalizationSpec → invalidated
+FormalArtifact     → invalidated
+KernelResult       → invalidated
+```
+
+Historical kernel information is retained for audit, but it no longer acts as the active formal certificate for the current research lineage.
+
+This is necessary because the Lean kernel may have correctly proved a frozen theorem while the upstream mapping between that theorem and the current research claim has become stale.
 
 ## Reporting
 
