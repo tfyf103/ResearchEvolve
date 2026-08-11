@@ -2,6 +2,14 @@
 
 from .conjectures import Conjecture, Counterexample, Observation, Predicate, ValueRef
 from .ideas import IdeaGenome, ResearchProposal, SemanticPatch
+from .proofs import (
+    LemmaSpec,
+    ProofArtifact,
+    ProofPlan,
+    ProofReview,
+    ProofSpec,
+    VerificationIssue,
+)
 from .spec import (
     Budget,
     ConjecturePolicy,
@@ -28,5 +36,11 @@ __all__ = [
     "Counterexample",
     "Predicate",
     "ValueRef",
+    "ProofSpec",
+    "ProofPlan",
+    "LemmaSpec",
+    "ProofArtifact",
+    "ProofReview",
+    "VerificationIssue",
 ]
-__version__ = "0.4.0"
+__version__ = "0.5.0"

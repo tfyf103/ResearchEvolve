@@ -53,3 +53,25 @@ jobs:
           research-evolve observations --workspace .researchevolve/ci-conjecture42 --limit 3
           research-evolve conjectures --workspace .researchevolve/ci-conjecture42 --limit 3
           research-evolve counterexamples --workspace .researchevolve/ci-conjecture42 --limit 3
+      - name: v0.5 proof planner prover verifier smoke test
+        run: |
+          research-evolve run \
+            --spec examples/proof42/spec.json \
+            --evaluator examples/target42/evaluator.py \
+            --seeds examples/proof42/seeds.json \
+            --conjecturer-command "python examples/conjecture42/conjecturer.py" \
+            --workspace .researchevolve/ci-proof42 \
+            --islands 2
+          research-evolve prove \
+            --workspace .researchevolve/ci-proof42 \
+            --planner-command "python examples/proof42/planner.py" \
+            --prover-command "python examples/proof42/prover.py" \
+            --verifier-command "python examples/proof42/verifier.py" \
+            --max-conjectures 4 \
+            --max-lemmas 12 \
+            --min-verifier-confidence 0.7
+          research-evolve proof-specs --workspace .researchevolve/ci-proof42 --limit 3
+          research-evolve proof-plans --workspace .researchevolve/ci-proof42 --limit 3
+          research-evolve proof-artifacts --workspace .researchevolve/ci-proof42 --limit 3
+          research-evolve proof-reviews --workspace .researchevolve/ci-proof42 --limit 3
+          research-evolve proof-manifest --workspace .researchevolve/ci-proof42
