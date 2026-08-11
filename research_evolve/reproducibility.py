@@ -40,6 +40,7 @@ def build_manifest(
     mutator_name: str,
     domain_pack: str | None = None,
     explorer_name: str | None = None,
+    conjecturer_name: str | None = None,
 ) -> dict[str, Any]:
     evaluators = [
         {"path": str(Path(path)), "sha256": sha256_file(path)}
@@ -52,9 +53,10 @@ def build_manifest(
         "mutator": mutator_name,
         "domain_pack": domain_pack,
         "explorer": explorer_name,
+        "conjecturer": conjecturer_name,
     }
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "fingerprint": stable_json_hash(stable_inputs),
         "inputs": stable_inputs,
         "runtime": {
@@ -63,8 +65,8 @@ def build_manifest(
             "platform": platform.platform(),
         },
         "reproducibility_note": (
-            "Evaluator/mutator inputs are fingerprinted. External LLM explorers may be nondeterministic; "
-            "their structured proposals and outcomes are persisted in ideas.sqlite3."
+            "Evaluator/mutator inputs are fingerprinted. External LLM explorers/conjecturers may be nondeterministic; "
+            "their structured proposals, conjectures, empirical tests, and counterexamples are persisted in SQLite journals."
         ),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
