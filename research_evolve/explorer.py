@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shlex
 import subprocess
@@ -55,7 +56,9 @@ class CommandExplorer:
 
     @property
     def name(self) -> str:
-        return "command:" + " ".join(self.command)
+        # Store a stable identity without persisting command arguments that may contain secrets.
+        digest = hashlib.sha256(json.dumps(self.command, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
+        return f"command:{self.command[0]}:{digest}"
 
     def propose(self, context: ResearchContext, count: int) -> list[ResearchProposal]:
         if count < 1:
