@@ -53,41 +53,62 @@ class ProofPipeline:
             raise ValueError("proof pipeline size limits must be positive")
         if not 0.0 <= min_verifier_confidence <= 1.0:
             raise ValueError("min_verifier_confidence must be in [0, 1]")
-        if prover.name == verifier.name:
-            raise ValueError("proof verifier must be independent from the prover")
+
+        prover_key = str(getattr(prover, "independence_key", prover.name))
+        verifier_key = str(getattr(verifier, "independence_key", verifier.name))
+        if prover_key == verifier_key:
+            raise ValueError("proof verifier must be independent from the prover implementation")
 
         self.workspace = Path(workspace)
         self.planner = planner
         self.prover = prover
         self.verifier = verifier
+        self.prover_independence_key = prover_key
+        self.verifier_independence_key = verifier_key
         self.max_conjectures = max_conjectures
         self.max_lemmas = max_lemmas
         self.evidence_context = evidence_context
         self.min_verifier_confidence = min_verifier_confidence
 
         source_manifest_path = self.workspace / "manifest.json"
+        summary_path = self.workspace / "summary.json"
+        checkpoint_path = self.workspace / "checkpoint.json"
+        candidate_path = self.workspace / "candidates.sqlite3"
+        conjecture_path = self.workspace / "conjectures.sqlite3"
+        graph_path = self.workspace / "research_graph.sqlite3"
         if not source_manifest_path.is_file():
             raise ValueError(f"research workspace has no manifest.json: {self.workspace}")
+        if not summary_path.is_file():
+            raise ValueError("proof pipeline requires a completed research run with summary.json")
+        if not candidate_path.is_file() or not conjecture_path.is_file() or not graph_path.is_file():
+            raise ValueError("proof pipeline requires candidates.sqlite3, conjectures.sqlite3, and research_graph.sqlite3")
+
         self.source_manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        self.source_generation = int(summary.get("generation_completed", 0))
+        if checkpoint_path.is_file():
+            checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            if int(checkpoint.get("generation", -1)) != self.source_generation:
+                raise ValueError("research workspace checkpoint and summary generations do not match")
+
         spec = self.source_manifest.get("inputs", {}).get("spec", {})
         self.problem = str(spec.get("problem", ""))
         self.constraints = [dict(item) for item in spec.get("constraints", []) if isinstance(item, dict)]
         self.domain = str(spec.get("domain", "generic"))
 
-        summary_path = self.workspace / "summary.json"
-        self.source_generation = 0
-        if summary_path.is_file():
-            summary = json.loads(summary_path.read_text(encoding="utf-8"))
-            self.source_generation = int(summary.get("generation_completed", 0))
-
-        self.db = CandidateDB(self.workspace / "candidates.sqlite3")
-        self.conjectures = ConjectureMemory(self.workspace / "conjectures.sqlite3")
-        self.graph = ResearchGraph(self.workspace / "research_graph.sqlite3")
-        self.memory = ProofMemory(self.workspace / "proofs.sqlite3")
+        proof_db_path = self.workspace / "proofs.sqlite3"
+        proof_manifest_path = self.workspace / "proof_manifest.json"
+        if proof_db_path.is_file() and not proof_manifest_path.is_file():
+            raise ValueError("proofs.sqlite3 exists without proof_manifest.json; refusing to mix an unaudited proof journal")
 
         self.proof_manifest = self._build_proof_manifest()
         self.proof_manifest_fingerprint = str(self.proof_manifest["fingerprint"])
         self._ensure_proof_manifest()
+
+        self.db = CandidateDB(candidate_path)
+        self.conjectures = ConjectureMemory(conjecture_path)
+        self.graph = ResearchGraph(graph_path)
+        self.memory = ProofMemory(proof_db_path)
 
     def _build_proof_manifest(self) -> dict[str, Any]:
         stable = {
@@ -95,6 +116,8 @@ class ProofPipeline:
             "planner": self.planner.name,
             "prover": self.prover.name,
             "verifier": self.verifier.name,
+            "prover_independence_key": self.prover_independence_key,
+            "verifier_independence_key": self.verifier_independence_key,
             "max_conjectures": self.max_conjectures,
             "max_lemmas": self.max_lemmas,
             "evidence_context": self.evidence_context,
@@ -137,6 +160,17 @@ class ProofPipeline:
     def _valid_candidates(self) -> list[Candidate]:
         return [candidate for candidate in self.db.all() if candidate.valid]
 
+    def _sync_source_summary_conjecture_stats(self) -> None:
+        path = self.workspace / "summary.json"
+        summary = json.loads(path.read_text(encoding="utf-8"))
+        stats = self.conjectures.stats()
+        summary["observation_count"] = stats["observations"]
+        summary["conjecture_count"] = stats["conjectures"]
+        summary["empirically_supported_conjectures"] = stats["empirically_supported"]
+        summary["refuted_conjectures"] = stats["refuted"]
+        summary["counterexample_count"] = stats["counterexamples"]
+        path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+
     def _record_counterexample(self, conjecture: Conjecture, candidate: Candidate) -> None:
         counterexample = Counterexample(
             conjecture_id=conjecture.id,
@@ -156,6 +190,7 @@ class ProofPipeline:
         )
         self.conjectures.record_counterexample(counterexample)
         self.conjectures.refresh_status(conjecture.id, min_evidence=1)
+        self._sync_source_summary_conjecture_stats()
         self.graph.add_node(
             ResearchNode(
                 id=counterexample.id,
@@ -230,6 +265,7 @@ class ProofPipeline:
             for item in self.conjectures.recent_observations(1000)
             if item["id"] in observation_ids
         ]
+        prior = [item for item in self.memory.list_specs(20) if item.get("id") != proof_spec.id][:12]
         return ProofContext(
             problem=self.problem,
             generation=self.source_generation,
@@ -237,7 +273,7 @@ class ProofPipeline:
             conjecture=conjecture_record,
             evidence_candidates=[self._candidate_snapshot(candidate) for candidate in evidence[: self.evidence_context]],
             observations=observations,
-            prior_proofs=self.memory.list_specs(12),
+            prior_proofs=prior,
             metadata={
                 "domain": self.domain,
                 "constraints": self.constraints,
@@ -248,20 +284,22 @@ class ProofPipeline:
             },
         )
 
-    def _record_spec_graph(self, proof_spec: ProofSpec) -> None:
+    def _record_spec_graph(self, proof_spec: ProofSpec, status: str = "planned", **extra: Any) -> None:
+        payload = proof_spec.to_dict()
+        payload.update(extra)
         self.graph.add_node(
             ResearchNode(
                 id=proof_spec.id,
                 type="proof_spec",
                 statement=proof_spec.statement,
-                status="planned",
-                payload=proof_spec.to_dict(),
+                status=status,
+                payload=payload,
                 created_at=proof_spec.created_at,
             )
         )
         self.graph.add_edge(proof_spec.id, "targets_conjecture", proof_spec.conjecture_id)
 
-    def _record_plan_graph(self, plan: ProofPlan, generation: int) -> None:
+    def _record_plan_graph(self, plan: ProofPlan, generation: int, status: str = "planned") -> None:
         payload = plan.to_dict()
         payload["generation"] = generation
         self.graph.add_node(
@@ -269,7 +307,7 @@ class ProofPipeline:
                 id=plan.id,
                 type="proof_plan",
                 statement=plan.strategy,
-                status="planned",
+                status=status,
                 payload=payload,
                 created_at=plan.created_at,
             )
@@ -282,7 +320,7 @@ class ProofPipeline:
                     id=lemma.id,
                     type="lemma",
                     statement=lemma.statement,
-                    status="planned",
+                    status="planned" if status == "planned" else status,
                     payload={**lemma.to_dict(), "generation": generation, "proof_plan_id": plan.id},
                 )
             )
@@ -342,6 +380,24 @@ class ProofPipeline:
         self.graph.add_node(node)
         self.graph.add_edge(proof_spec.id, "proof_actor_failed", node.id)
 
+    def _validate_artifact(self, artifact: ProofArtifact, plan: ProofPlan, proof_spec: ProofSpec) -> None:
+        expected = {lemma.label for lemma in plan.lemmas}
+        supplied = set(artifact.lemma_arguments)
+        missing = sorted(expected - supplied)
+        extra = sorted(supplied - expected)
+        if missing:
+            raise ValueError(f"proof artifact is missing lemma arguments: {missing}")
+        if extra:
+            raise ValueError(f"proof artifact contains unknown lemma labels: {extra}")
+        empty = sorted(label for label, text in artifact.lemma_arguments.items() if not str(text).strip())
+        if empty:
+            raise ValueError(f"proof artifact has empty lemma arguments: {empty}")
+        if not artifact.final_argument.strip():
+            raise ValueError("proof artifact requires a non-empty final_argument")
+        hidden_assumptions = sorted(set(artifact.assumptions_used) - set(proof_spec.assumptions))
+        if hidden_assumptions:
+            raise ValueError(f"proof artifact introduced assumptions outside ProofSpec: {hidden_assumptions}")
+
     def _attempt(
         self,
         conjecture: Conjecture,
@@ -372,6 +428,7 @@ class ProofPipeline:
             plan.validate(max_lemmas=self.max_lemmas)
         except Exception as exc:
             self.memory.mark_spec_invalid(proof_spec.id)
+            self._record_spec_graph(proof_spec, status="invalid", error=str(exc))
             self._record_actor_error("planner", self.planner, proof_spec, str(exc))
             return "invalid"
         self.memory.record_plan(plan, self.source_generation)
@@ -381,16 +438,15 @@ class ProofPipeline:
             artifact = self.prover.prove(context, proof_spec, plan)
             artifact.proof_spec_id = proof_spec.id
             artifact.proof_plan_id = plan.id
-            artifact.validate(plan)
-            hidden_assumptions = sorted(set(artifact.assumptions_used) - set(proof_spec.assumptions))
-            if hidden_assumptions:
-                raise ValueError(f"proof artifact introduced assumptions outside ProofSpec: {hidden_assumptions}")
+            self._validate_artifact(artifact, plan, proof_spec)
         except Exception as exc:
             self.memory.mark_spec_invalid(proof_spec.id)
+            self._record_spec_graph(proof_spec, status="invalid", error=str(exc))
             self._record_actor_error("prover", self.prover, proof_spec, str(exc))
             return "invalid"
         self.memory.record_artifact(artifact, self.source_generation)
         self._record_artifact_graph(artifact, self.source_generation)
+        self._record_plan_graph(plan, self.source_generation, status="drafted")
 
         try:
             review = self.verifier.verify(context, proof_spec, plan, artifact)
@@ -399,8 +455,14 @@ class ProofPipeline:
             review.validate()
         except Exception as exc:
             self._record_actor_error("verifier", self.verifier, proof_spec, str(exc))
-            self._record_artifact_graph(artifact, self.source_generation, status="inconclusive")
-            return "inconclusive"
+            review = ProofReview(
+                proof_artifact_id=artifact.id,
+                verifier=self.verifier.name,
+                decision="inconclusive",
+                confidence=0.0,
+                adversarial_notes=f"Verifier execution failed before completing review: {exc}",
+                metadata={"synthetic": True, "verifier_failure": True},
+            )
 
         status = self.memory.record_review(
             review,
@@ -408,6 +470,8 @@ class ProofPipeline:
             min_confidence=self.min_verifier_confidence,
         )
         self._record_artifact_graph(artifact, self.source_generation, status=status)
+        self._record_plan_graph(plan, self.source_generation, status=status)
+        self._record_spec_graph(proof_spec, status=status, review_id=review.id)
         self._record_review_graph(review, self.source_generation, status, conjecture.id)
         return status
 
@@ -417,17 +481,14 @@ class ProofPipeline:
             record
             for record in self.conjectures.recent_conjectures(100000)
             if record["status"] == "empirically_supported"
-        ]
-        records = records[: self.max_conjectures]
+            and not self.memory.has_verified_for_conjecture(str(record["id"]))
+        ][: self.max_conjectures]
 
         considered = 0
         attempted = 0
         refuted_before = 0
         statuses: list[str] = []
         for record in records:
-            conjecture_id = str(record["id"])
-            if self.memory.has_verified_for_conjecture(conjecture_id):
-                continue
             considered += 1
             conjecture = Conjecture.from_dict(record)
             conjecture.status = "empirically_supported"
@@ -436,7 +497,7 @@ class ProofPipeline:
                 continue
 
             refreshed = next(
-                (item for item in self.conjectures.recent_conjectures(100000) if item["id"] == conjecture_id),
+                (item for item in self.conjectures.recent_conjectures(100000) if item["id"] == conjecture.id),
                 record,
             )
             if refreshed["status"] != "empirically_supported":
