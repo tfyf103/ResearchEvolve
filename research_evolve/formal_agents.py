@@ -99,7 +99,13 @@ class _CommandFormalActor:
             raise RuntimeError(f"{self.role} returned invalid JSON: {exc}") from exc
 
     @staticmethod
-    def _artifact_from_response(raw: Any, spec: FormalizationSpec, *, attempt: int, parent_id: str | None = None) -> FormalArtifact:
+    def _artifact_from_response(
+        raw: Any,
+        spec: FormalizationSpec,
+        *,
+        attempt: int,
+        parent_id: str | None = None,
+    ) -> FormalArtifact:
         if not isinstance(raw, dict):
             raise RuntimeError("formal actor response must be a JSON object")
         artifact = FormalArtifact(
@@ -125,13 +131,14 @@ class CommandFormalizer(_CommandFormalActor):
             "context": context.to_dict(),
             "formal_spec": spec.to_dict(),
             "response_contract": {
-                "proof_term": "Lean proof term/body only; do not repeat or modify theorem_signature",
-                "helper_source": "optional helper declarations only; may be empty",
+                "proof_term": "Lean theorem body/proof term only; local have/show steps are allowed",
+                "helper_source": "must be the empty string in v0.6",
                 "metadata": {},
             },
             "integrity_policy": (
-                "The theorem signature, theorem name, imports, and toolchain are frozen. "
-                "Do not emit sorry/admit/axiom/unsafe/extern/opaque. Empirical evidence is not a proof."
+                "Imports, trusted preamble definitions, theorem signature/name, and toolchain are frozen. "
+                "Do not emit top-level helpers or sorry/admit/axiom/unsafe/extern/opaque/run_tac/metaprogramming. "
+                "Empirical evidence and natural-language proofs are context, not kernel evidence."
             ),
         }
         raw = self._invoke(request)
@@ -159,13 +166,13 @@ class CommandFormalRepairer(_CommandFormalActor):
             "kernel_result": kernel_result.to_dict(),
             "attempt": attempt,
             "response_contract": {
-                "proof_term": "replacement Lean proof term/body only",
-                "helper_source": "replacement optional helper declarations",
+                "proof_term": "replacement Lean theorem body/proof term only",
+                "helper_source": "must be the empty string in v0.6",
                 "metadata": {},
             },
             "integrity_policy": (
-                "Repair only the proof term/helper declarations. The frozen theorem signature/imports/toolchain cannot change. "
-                "Do not use sorry/admit/axiom/unsafe/extern/opaque."
+                "Repair only the theorem body. Imports, trusted preamble definitions, theorem signature/name, and toolchain cannot change. "
+                "Do not emit top-level helpers or sorry/admit/axiom/unsafe/extern/opaque/run_tac/metaprogramming."
             ),
         }
         raw = self._invoke(request)
