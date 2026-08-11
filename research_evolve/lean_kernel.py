@@ -12,19 +12,30 @@ from .formal import FormalArtifact, FormalizationSpec, KernelResult, LeanDiagnos
 
 
 class LeanKernel:
-    """Thin Lean compiler/kernel gate.
+    """Thin Lean compiler/kernel gate for v0.6.
 
-    `formal_verified` is only emitted when:
-    - generated source passes a conservative escape-hatch scan;
-    - the detected Lean version matches the frozen FormalizationSpec toolchain;
-    - the Lean process exits successfully; and
-    - Lean output does not contain an error or `sorryAx` dependency.
+    `formal_verified` is emitted only when the frozen target and a model-supplied
+    proof term pass a conservative source gate, the Lean version matches the
+    frozen toolchain, and Lean exits successfully without errors or `sorryAx`.
 
-    The source contract (imports + theorem signature) is frozen outside the
-    Formalizer. The model only supplies helper declarations and a proof term.
+    v0.6 intentionally rejects untrusted top-level helper source. Formalizers can
+    use local `have`/`show` steps inside the proof term, while imports, definitions,
+    and theorem signatures remain frozen by the ResearchSpec formal contract.
     """
 
-    _FORBIDDEN = ("sorry", "admit", "axiom", "unsafe", "extern", "opaque")
+    _FORBIDDEN_WORDS = (
+        "sorry",
+        "admit",
+        "axiom",
+        "unsafe",
+        "extern",
+        "opaque",
+        "run_tac",
+        "elab",
+        "macro",
+        "syntax",
+    )
+    _FORBIDDEN_FRAGMENTS = ("#eval", "#run")
     _DIAGNOSTIC_RE = re.compile(
         r"^(?P<file>.*?):(?P<line>\d+):(?P<column>\d+):\s*(?P<severity>error|warning|info):\s*(?P<message>.*)$"
     )
@@ -59,9 +70,12 @@ class LeanKernel:
 
     @classmethod
     def _forbidden_token(cls, source: str) -> str | None:
-        for token in cls._FORBIDDEN:
+        for token in cls._FORBIDDEN_WORDS:
             if re.search(rf"\b{re.escape(token)}\b", source):
                 return token
+        for fragment in cls._FORBIDDEN_FRAGMENTS:
+            if fragment in source:
+                return fragment
         return None
 
     @classmethod
@@ -107,6 +121,31 @@ class LeanKernel:
             return None, completed.stdout, completed.stderr, completed.returncode, "lean-version-unrecognized"
         return version, completed.stdout, completed.stderr, completed.returncode, None
 
+    def _gate_failure(
+        self,
+        spec: FormalizationSpec,
+        artifact: FormalArtifact,
+        source: str,
+        reason: str,
+        message: str,
+    ) -> tuple[KernelResult, str]:
+        digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+        return (
+            KernelResult(
+                formal_artifact_id=artifact.id,
+                passed=False,
+                status="kernel_rejected",
+                command=list(self.command),
+                expected_toolchain=spec.toolchain,
+                detected_version=None,
+                exit_code=None,
+                diagnostics=[LeanDiagnostic(severity="error", message=message)],
+                gate_reason=reason,
+                source_sha256=digest,
+            ),
+            source,
+        )
+
     def verify(
         self,
         spec: FormalizationSpec,
@@ -116,26 +155,25 @@ class LeanKernel:
     ) -> tuple[KernelResult, str]:
         source = artifact.build_source(spec)
         digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+        if artifact.helper_source.strip():
+            return self._gate_failure(
+                spec,
+                artifact,
+                source,
+                "untrusted-top-level-helper",
+                "v0.6 forbids model-supplied top-level helper_source; use local proof steps inside proof_term",
+            )
+
         forbidden = self._forbidden_token(source)
         if forbidden is not None:
-            result = KernelResult(
-                formal_artifact_id=artifact.id,
-                passed=False,
-                status="kernel_rejected",
-                command=list(self.command),
-                expected_toolchain=spec.toolchain,
-                detected_version=None,
-                exit_code=None,
-                diagnostics=[
-                    LeanDiagnostic(
-                        severity="error",
-                        message=f"forbidden Lean escape hatch/declaration: {forbidden}",
-                    )
-                ],
-                gate_reason=f"forbidden-token:{forbidden}",
-                source_sha256=digest,
+            return self._gate_failure(
+                spec,
+                artifact,
+                source,
+                f"forbidden-token:{forbidden}",
+                f"forbidden Lean escape hatch/metaprogramming token: {forbidden}",
             )
-            return result, source
 
         expected = self._expected_version(spec.toolchain)
         if expected is None:
