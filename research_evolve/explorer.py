@@ -5,6 +5,7 @@ import json
 import shlex
 import subprocess
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Protocol, Sequence
 
 from .ideas import ResearchProposal
@@ -53,12 +54,27 @@ class CommandExplorer:
             raise ValueError("explorer command must not be empty")
         self.command = parsed
         self.timeout_seconds = float(timeout_seconds)
+        self._identity = self._build_identity()
+
+    def _build_identity(self) -> str:
+        # Hash argv and any directly referenced files, but never persist raw arguments
+        # in the manifest because commands may contain sensitive provider parameters.
+        files: list[dict[str, str]] = []
+        for argument in self.command[1:]:
+            path = Path(argument)
+            if not path.is_file():
+                continue
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            files.append({"path": str(path), "sha256": digest})
+        identity_input = {"argv": self.command, "files": files}
+        digest = hashlib.sha256(
+            json.dumps(identity_input, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:16]
+        return f"command:{Path(self.command[0]).name}:{digest}"
 
     @property
     def name(self) -> str:
-        # Store a stable identity without persisting command arguments that may contain secrets.
-        digest = hashlib.sha256(json.dumps(self.command, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
-        return f"command:{self.command[0]}:{digest}"
+        return self._identity
 
     def propose(self, context: ResearchContext, count: int) -> list[ResearchProposal]:
         if count < 1:
