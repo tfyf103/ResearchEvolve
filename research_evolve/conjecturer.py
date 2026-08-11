@@ -34,12 +34,7 @@ class Conjecturer(Protocol):
 
 
 class CommandConjecturer:
-    """External conjecture generator over a strict JSON stdin/stdout contract.
-
-    The process may use an LLM, symbolic heuristic, or deterministic script. It
-    never decides truth: it can only emit a testable predicate. ResearchEvolve
-    evaluates that predicate against independently evaluated candidates.
-    """
+    """External conjecture generator over a strict JSON stdin/stdout contract."""
 
     def __init__(self, command: str | Sequence[str], timeout_seconds: float = 60.0) -> None:
         if isinstance(command, str):
@@ -71,13 +66,18 @@ class CommandConjecturer:
 
     @staticmethod
     def _sanitize_external_conjecture(item: dict[str, Any]) -> dict[str, Any]:
+        """Prevent an external model from controlling internal IDs, status, or ordering timestamps."""
+
         sanitized = dict(item)
         external_id = sanitized.pop("id", None)
+        external_created_at = sanitized.pop("created_at", None)
+        sanitized.pop("status", None)
         metadata = dict(sanitized.get("metadata", {}))
         if external_id is not None:
             metadata["external_conjecture_id"] = str(external_id)
+        if external_created_at is not None:
+            metadata["external_created_at"] = str(external_created_at)
         sanitized["metadata"] = metadata
-        sanitized.pop("status", None)
         return sanitized
 
     def propose(self, context: ConjectureContext, count: int) -> list[Conjecture]:
