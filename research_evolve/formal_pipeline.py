@@ -21,7 +21,6 @@ class FormalRunSummary:
     attempted_formalizations: int
     already_formal_verified: int
     formal_verified: int
-    kernel_rejected: int
     repair_exhausted: int
     environment_error: int
     invalid: int
@@ -35,13 +34,7 @@ class FormalRunSummary:
 
 
 class FormalPipeline:
-    """v0.6 Lean formalization + kernel verification stage.
-
-    This pipeline consumes current `verified_natural_language` proof lineages.
-    The source ResearchSpec freezes each Lean target through
-    `metadata.formal_contracts`. Formalizer/Repairer actors may only supply proof
-    terms and helper declarations; Lean itself is the final gate.
-    """
+    """v0.6 Lean formalization + kernel verification stage."""
 
     def __init__(
         self,
@@ -64,30 +57,27 @@ class FormalPipeline:
         self.max_repairs = int(max_repairs)
         self.evidence_context = int(evidence_context)
 
-        source_manifest_path = self.workspace / "manifest.json"
-        proof_manifest_path = self.workspace / "proof_manifest.json"
-        proof_db_path = self.workspace / "proofs.sqlite3"
-        candidate_path = self.workspace / "candidates.sqlite3"
-        conjecture_path = self.workspace / "conjectures.sqlite3"
-        graph_path = self.workspace / "research_graph.sqlite3"
-        summary_path = self.workspace / "summary.json"
-        for path in [
-            source_manifest_path,
-            proof_manifest_path,
-            proof_db_path,
-            candidate_path,
-            conjecture_path,
-            graph_path,
-            summary_path,
-        ]:
+        required = {
+            "source_manifest": self.workspace / "manifest.json",
+            "proof_manifest": self.workspace / "proof_manifest.json",
+            "proof_db": self.workspace / "proofs.sqlite3",
+            "candidate_db": self.workspace / "candidates.sqlite3",
+            "conjecture_db": self.workspace / "conjectures.sqlite3",
+            "graph_db": self.workspace / "research_graph.sqlite3",
+            "summary": self.workspace / "summary.json",
+        }
+        for label, path in required.items():
             if not path.is_file():
-                raise ValueError(f"formal pipeline requires existing artifact: {path}")
+                raise ValueError(f"formal pipeline requires {label}: {path}")
 
-        self.source_manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
-        self.proof_manifest = json.loads(proof_manifest_path.read_text(encoding="utf-8"))
-        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        self.source_manifest = json.loads(required["source_manifest"].read_text(encoding="utf-8"))
+        self.proof_manifest = json.loads(required["proof_manifest"].read_text(encoding="utf-8"))
+        summary = json.loads(required["summary"].read_text(encoding="utf-8"))
         self.source_generation = int(summary.get("generation_completed", 0))
+
         proof_inputs = self.proof_manifest.get("inputs", {})
+        if not isinstance(proof_inputs, dict):
+            raise ValueError("proof_manifest inputs must be an object")
         if proof_inputs.get("source_run_fingerprint") != self.source_manifest.get("fingerprint"):
             raise ValueError("proof_manifest source fingerprint does not match research manifest")
         if int(proof_inputs.get("source_generation", -1)) != self.source_generation:
@@ -106,22 +96,22 @@ class FormalPipeline:
             raise ValueError("ResearchSpec.metadata.formal_contracts must be a list")
         self.contracts = self._validate_contracts(raw_contracts)
 
-        formal_db_path = self.workspace / "formal.sqlite3"
-        formal_manifest_path = self.workspace / "formal_manifest.json"
-        if formal_db_path.is_file() and not formal_manifest_path.is_file():
+        formal_db = self.workspace / "formal.sqlite3"
+        formal_manifest = self.workspace / "formal_manifest.json"
+        if formal_db.is_file() and not formal_manifest.is_file():
             raise ValueError("formal.sqlite3 exists without formal_manifest.json; refusing unaudited formal journal")
 
-        self.db = CandidateDB(candidate_path)
-        self.conjectures = ConjectureMemory(conjecture_path)
-        self.proofs = ProofMemory(proof_db_path)
-        self.graph = ResearchGraph(graph_path)
-        self.memory = FormalMemory(formal_db_path)
+        self.db = CandidateDB(required["candidate_db"])
+        self.conjectures = ConjectureMemory(required["conjecture_db"])
+        self.proofs = ProofMemory(required["proof_db"])
+        self.graph = ResearchGraph(required["graph_db"])
+        self.memory = FormalMemory(formal_db)
         self.sources_dir = self.workspace / "formal_sources"
         self.sources_dir.mkdir(parents=True, exist_ok=True)
 
         self.formal_manifest = self._build_manifest()
         self.formal_manifest_fingerprint = str(self.formal_manifest["fingerprint"])
-        self._ensure_manifest(formal_manifest_path)
+        self._ensure_manifest(formal_manifest)
 
     @staticmethod
     def _validate_contracts(raw_contracts: list[Any]) -> dict[str, dict[str, Any]]:
@@ -134,16 +124,22 @@ class FormalPipeline:
                 raise ValueError(f"formal contract #{index} requires conjecture_statement")
             if statement in contracts:
                 raise ValueError(f"duplicate formal contract for conjecture statement: {statement!r}")
-            contract = {
+            imports = raw.get("imports", [])
+            if not isinstance(imports, list):
+                raise ValueError(f"formal contract #{index} imports must be a list")
+            metadata = raw.get("metadata", {})
+            if not isinstance(metadata, dict):
+                raise ValueError(f"formal contract #{index} metadata must be an object")
+            contracts[statement] = {
                 "conjecture_statement": statement,
                 "backend": str(raw.get("backend", "lean4")),
                 "toolchain": str(raw.get("toolchain", "leanprover/lean4:v4.30.0")),
                 "theorem_name": str(raw.get("theorem_name", "")).strip(),
                 "theorem_signature": str(raw.get("theorem_signature", "")).strip(),
-                "imports": [str(item) for item in raw.get("imports", [])],
-                "metadata": dict(raw.get("metadata", {})),
+                "imports": [str(item) for item in imports],
+                "preamble": str(raw.get("preamble", "")),
+                "metadata": dict(metadata),
             }
-            contracts[statement] = contract
         return contracts
 
     def _build_manifest(self) -> dict[str, Any]:
@@ -164,8 +160,8 @@ class FormalPipeline:
             "fingerprint": stable_json_hash(stable),
             "inputs": stable,
             "truth_policy": (
-                "formal_verified is granted only by the configured Lean kernel gate on the frozen theorem signature. "
-                "Natural-language models cannot directly assign formal_verified."
+                "formal_verified is granted only by the configured Lean kernel gate on the frozen imports/preamble/theorem signature. "
+                "Natural-language actors cannot directly assign formal_verified."
             ),
         }
 
@@ -194,86 +190,24 @@ class FormalPipeline:
     def _valid_candidates(self) -> list[Candidate]:
         return [candidate for candidate in self.db.all() if candidate.valid]
 
+    def _conjecture_records(self) -> dict[str, dict[str, Any]]:
+        return {str(item["id"]): item for item in self.conjectures.recent_conjectures(100000)}
+
     @staticmethod
-    def _by_id(records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-        return {str(item["id"]): item for item in records if item.get("id") is not None}
-
-    def _proof_state(self) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
-        specs = self.proofs.list_specs(100000)
-        artifacts = self.proofs.list_artifacts(100000)
-        reviews = self.proofs.list_reviews(100000)
-        return specs, self._by_id(artifacts), self._by_id(reviews)
-
-    def _latest_verified_artifact(self, proof_spec_id: str, artifacts: list[dict[str, Any]]) -> dict[str, Any] | None:
+    def _latest_verified_artifact(proof_spec_id: str, artifacts: list[dict[str, Any]]) -> dict[str, Any] | None:
         for artifact in artifacts:
             if artifact.get("proof_spec_id") == proof_spec_id and artifact.get("status") == "verified_natural_language":
                 return artifact
         return None
 
     @staticmethod
-    def _review_for_artifact(artifact_id: str, reviews: list[dict[str, Any]]) -> dict[str, Any] | None:
+    def _verified_review(artifact_id: str, reviews: list[dict[str, Any]]) -> dict[str, Any] | None:
         for review in reviews:
             if review.get("proof_artifact_id") == artifact_id and review.get("gated_status") == "verified_natural_language":
                 return review
         return None
 
-    def _conjecture_record(self, conjecture_id: str) -> dict[str, Any] | None:
-        return next(
-            (item for item in self.conjectures.recent_conjectures(100000) if item.get("id") == conjecture_id),
-            None,
-        )
-
-    def _build_context(
-        self,
-        formal_spec: FormalizationSpec,
-        proof_spec: dict[str, Any],
-        proof_artifact: dict[str, Any],
-        proof_review: dict[str, Any],
-        conjecture: dict[str, Any],
-        candidates: list[Candidate],
-    ) -> FormalContext:
-        evidence_ids = list(dict.fromkeys(conjecture.get("evidence_candidate_ids", [])))
-        evidence = [candidate for candidate in candidates if candidate.id in evidence_ids]
-        if len(evidence) < self.evidence_context:
-            known = {candidate.id for candidate in evidence}
-            for candidate in sorted(
-                candidates,
-                key=lambda item: item.score if item.score is not None else float("-inf"),
-                reverse=True,
-            ):
-                if candidate.id in known:
-                    continue
-                evidence.append(candidate)
-                known.add(candidate.id)
-                if len(evidence) >= self.evidence_context:
-                    break
-        observation_ids = set(conjecture.get("observation_ids", []))
-        observations = [
-            item
-            for item in self.conjectures.recent_observations(1000)
-            if item.get("id") in observation_ids
-        ]
-        return FormalContext(
-            problem=self.problem,
-            generation=self.source_generation,
-            formal_spec=formal_spec.to_dict(),
-            proof_spec=proof_spec,
-            proof_artifact=proof_artifact,
-            proof_review=proof_review,
-            conjecture=conjecture,
-            observations=observations,
-            evidence_candidates=[self._candidate_snapshot(candidate) for candidate in evidence[: self.evidence_context]],
-            previous_kernel_runs=[],
-            metadata={
-                "domain": self.domain,
-                "truth_policy": (
-                    "The Lean theorem signature is frozen. Empirical candidates and natural-language proofs are context only; "
-                    "formal_verified requires the Lean kernel gate."
-                ),
-            },
-        )
-
-    def _formal_spec_from_contract(
+    def _formal_spec(
         self,
         proof_spec: dict[str, Any],
         proof_artifact: dict[str, Any],
@@ -288,6 +222,7 @@ class FormalPipeline:
             theorem_name=str(contract["theorem_name"]),
             theorem_signature=str(contract["theorem_signature"]),
             imports=list(contract["imports"]),
+            preamble=str(contract.get("preamble", "")),
             backend=str(contract["backend"]),
             toolchain=str(contract["toolchain"]),
             generation=self.source_generation,
@@ -296,16 +231,61 @@ class FormalPipeline:
         spec.validate()
         return spec
 
-    def _record_spec_graph(self, spec: FormalizationSpec, status: FormalStatus = "planned") -> None:
-        payload = spec.to_dict()
-        payload["generation"] = self.source_generation
+    def _build_context(
+        self,
+        formal_spec: FormalizationSpec,
+        proof_spec: dict[str, Any],
+        proof_artifact: dict[str, Any],
+        proof_review: dict[str, Any],
+        conjecture: dict[str, Any],
+        candidates: list[Candidate],
+    ) -> FormalContext:
+        evidence_ids = list(dict.fromkeys(conjecture.get("evidence_candidate_ids", [])))
+        evidence = [candidate for candidate in candidates if candidate.id in evidence_ids]
+        known = {candidate.id for candidate in evidence}
+        for candidate in sorted(
+            candidates,
+            key=lambda item: item.score if item.score is not None else float("-inf"),
+            reverse=True,
+        ):
+            if len(evidence) >= self.evidence_context:
+                break
+            if candidate.id in known:
+                continue
+            evidence.append(candidate)
+            known.add(candidate.id)
+        observation_ids = set(conjecture.get("observation_ids", []))
+        observations = [
+            item for item in self.conjectures.recent_observations(1000) if item.get("id") in observation_ids
+        ]
+        return FormalContext(
+            problem=self.problem,
+            generation=self.source_generation,
+            formal_spec=formal_spec.to_dict(),
+            proof_spec=proof_spec,
+            proof_artifact=proof_artifact,
+            proof_review=proof_review,
+            conjecture=conjecture,
+            observations=observations,
+            evidence_candidates=[self._candidate_snapshot(item) for item in evidence[: self.evidence_context]],
+            previous_kernel_runs=[],
+            metadata={
+                "domain": self.domain,
+                "truth_policy": (
+                    "The Lean imports, preamble definitions, and theorem signature are frozen. "
+                    "Empirical/natural-language evidence is context only; formal_verified requires the Lean kernel gate."
+                ),
+            },
+        )
+
+    def _record_spec_graph(self, spec: FormalizationSpec, status: FormalStatus) -> None:
         self.graph.add_node(
             ResearchNode(
                 id=spec.id,
                 type="formalization_spec",
                 statement=spec.theorem_signature,
                 status=status,
-                payload=payload,
+                payload=spec.to_dict(),
                 created_at=spec.created_at,
             )
         )
@@ -313,15 +293,13 @@ class FormalPipeline:
         self.graph.add_edge(spec.id, "formal_target_for", spec.conjecture_id)
 
     def _record_artifact_graph(self, artifact: FormalArtifact, source: str, status: FormalStatus) -> None:
-        payload = artifact.to_dict()
-        payload.update({"generation": self.source_generation, "source": source})
         self.graph.add_node(
             ResearchNode(
                 id=artifact.id,
                 type="formal_artifact",
-                statement=f"Lean attempt {artifact.attempt}",
+                statement=f"Lean proof attempt {artifact.attempt}",
                 status=status,
-                payload=payload,
+                payload={**artifact.to_dict(), "generation": self.source_generation, "source": source},
                 created_at=artifact.created_at,
             )
         )
@@ -337,7 +315,7 @@ class FormalPipeline:
                 statement=(
                     f"Lean formal verification passed ({result.detected_version})"
                     if result.passed
-                    else f"Lean formal verification failed: {result.gate_reason or result.status}"
+                    else f"Lean gate failed: {result.gate_reason or result.status}"
                 ),
                 status=result.status,
                 payload={**result.to_dict(), "generation": self.source_generation},
@@ -365,131 +343,117 @@ class FormalPipeline:
         if formal_spec is not None:
             self.graph.add_edge(formal_spec.id, "formalization_failed", node.id)
 
-    def _persist_source(self, artifact: FormalArtifact, source: str) -> Path:
-        path = self.sources_dir / f"{artifact.id}.lean"
-        path.write_text(source, encoding="utf-8")
-        return path
+    def _persist_source(self, artifact: FormalArtifact, source: str) -> None:
+        (self.sources_dir / f"{artifact.id}.lean").write_text(source, encoding="utf-8")
 
     def _sync_invalidated_graph(self, proof_spec_id: str) -> None:
-        spec_records = [item for item in self.memory.list_specs(100000) if item.get("proof_spec_id") == proof_spec_id]
-        spec_ids = {str(item["id"]) for item in spec_records}
-        artifact_records = [item for item in self.memory.list_artifacts(100000) if item.get("formal_spec_id") in spec_ids]
-        artifact_ids = {str(item["id"]) for item in artifact_records}
-        run_records = [item for item in self.memory.list_kernel_runs(100000) if item.get("formal_artifact_id") in artifact_ids]
-        for record in spec_records:
+        specs = [item for item in self.memory.list_specs(100000) if item.get("proof_spec_id") == proof_spec_id]
+        spec_ids = {str(item["id"]) for item in specs}
+        artifacts = [item for item in self.memory.list_artifacts(100000) if item.get("formal_spec_id") in spec_ids]
+        artifact_ids = {str(item["id"]) for item in artifacts}
+        runs = [item for item in self.memory.list_kernel_runs(100000) if item.get("formal_artifact_id") in artifact_ids]
+        for item in specs:
             self.graph.add_node(
                 ResearchNode(
-                    id=str(record["id"]),
+                    id=str(item["id"]),
                     type="formalization_spec",
-                    statement=str(record.get("theorem_signature", "formalization")),
+                    statement=str(item.get("theorem_signature", "formalization")),
                     status="invalidated",
-                    payload=record,
-                    created_at=str(record.get("created_at", "")),
+                    payload=item,
+                    created_at=str(item.get("created_at", "")),
                 )
             )
-        for record in artifact_records:
+        for item in artifacts:
             self.graph.add_node(
                 ResearchNode(
-                    id=str(record["id"]),
+                    id=str(item["id"]),
                     type="formal_artifact",
-                    statement=f"Lean attempt {record.get('attempt', '?')}",
+                    statement=f"Lean proof attempt {item.get('attempt', '?')}",
                     status="invalidated",
-                    payload=record,
-                    created_at=str(record.get("created_at", "")),
+                    payload=item,
+                    created_at=str(item.get("created_at", "")),
                 )
             )
-        for record in run_records:
+        for item in runs:
             self.graph.add_node(
                 ResearchNode(
-                    id=str(record["id"]),
+                    id=str(item["id"]),
                     type="lean_kernel_result",
                     statement="Historical Lean result invalidated by stale research proof lineage",
                     status="invalidated",
-                    payload=record,
-                    created_at=str(record.get("created_at", "")),
+                    payload=item,
+                    created_at=str(item.get("created_at", "")),
                 )
             )
 
-    def _invalidate_stale(self, proof_specs: list[dict[str, Any]]) -> int:
+    def _invalidate_stale(self, proof_specs: list[dict[str, Any]], conjectures: dict[str, dict[str, Any]]) -> int:
         current = {str(item["id"]): item for item in proof_specs}
-        conjectures = {str(item["id"]): item for item in self.conjectures.recent_conjectures(100000)}
-        count = 0
+        invalidated_count = 0
         for formal_spec in self.memory.list_specs(100000):
             if formal_spec.get("status") == "invalidated":
                 continue
             proof_spec_id = str(formal_spec.get("proof_spec_id", ""))
             proof_spec = current.get(proof_spec_id)
             conjecture = conjectures.get(str(formal_spec.get("conjecture_id", "")))
-            stale_reason = None
+            reason = None
             if proof_spec is None or proof_spec.get("status") != "verified_natural_language":
-                stale_reason = "source natural-language proof is no longer verified_natural_language"
+                reason = "source natural-language proof is no longer verified_natural_language"
             elif conjecture is None or conjecture.get("status") != "empirically_supported":
-                stale_reason = "source conjecture is no longer empirically_supported"
-            if stale_reason is not None:
-                invalidated = self.memory.invalidate_for_proof_spec(proof_spec_id, stale_reason)
+                reason = "source conjecture is no longer empirically_supported"
+            if reason:
+                invalidated = self.memory.invalidate_for_proof_spec(proof_spec_id, reason)
                 if invalidated:
+                    invalidated_count += len(invalidated)
                     self._sync_invalidated_graph(proof_spec_id)
-                    count += len(invalidated)
-        return count
+        return invalidated_count
 
-    def _attempt(
-        self,
-        formal_spec: FormalizationSpec,
-        context: FormalContext,
-    ) -> FormalStatus:
-        self.memory.record_spec(formal_spec)
-        self._record_spec_graph(formal_spec)
+    def _attempt(self, spec: FormalizationSpec, context: FormalContext) -> FormalStatus:
+        self.memory.record_spec(spec, status="planned")
+        self._record_spec_graph(spec, "planned")
         try:
-            artifact = self.formalizer.formalize(context, formal_spec)
-            artifact.formal_spec_id = formal_spec.id
-            artifact.attempt = 0
-            artifact.parent_artifact_id = None
-            artifact.validate()
+            current = self.formalizer.formalize(context, spec)
+            current.formal_spec_id = spec.id
+            current.attempt = 0
+            current.parent_artifact_id = None
+            current.validate()
         except Exception as exc:
-            self.memory.set_spec_status(formal_spec.id, "invalid")
-            self._record_spec_graph(formal_spec, status="invalid")
-            self._record_error("formalizer", formal_spec, str(exc))
+            self.memory.set_spec_status(spec.id, "invalid")
+            self._record_spec_graph(spec, "invalid")
+            self._record_error("formalizer", spec, str(exc))
             return "invalid"
 
         attempt = 0
-        current = artifact
         while True:
-            result, source = self.kernel.verify(formal_spec, current, workspace=self.workspace)
+            result, source = self.kernel.verify(spec, current, workspace=self.workspace)
             self.memory.record_artifact(current, source, status="generated")
             self._persist_source(current, source)
-            self.memory.record_kernel_result(formal_spec.id, result)
+            self.memory.record_kernel_result(spec.id, result)
             self._record_artifact_graph(current, source, result.status)
-            self._record_kernel_graph(formal_spec, result)
-            self._record_spec_graph(formal_spec, status=result.status)
+            self._record_kernel_graph(spec, result)
+            self._record_spec_graph(spec, result.status)
             if result.status == "formal_verified":
                 return "formal_verified"
             if result.status == "environment_error":
                 return "environment_error"
             if attempt >= self.max_repairs or self.repairer is None:
-                self.memory.set_spec_status(formal_spec.id, "repair_exhausted")
+                self.memory.set_spec_status(spec.id, "repair_exhausted")
                 self.memory.set_artifact_status(current.id, "repair_exhausted")
                 self._record_artifact_graph(current, source, "repair_exhausted")
-                self._record_spec_graph(formal_spec, status="repair_exhausted")
+                self._record_spec_graph(spec, "repair_exhausted")
                 return "repair_exhausted"
 
             attempt += 1
             context.previous_kernel_runs.append(result.to_dict())
             try:
-                repaired = self.repairer.repair(
-                    context,
-                    formal_spec,
-                    current,
-                    result,
-                    attempt,
-                )
-                repaired.formal_spec_id = formal_spec.id
+                repaired = self.repairer.repair(context, spec, current, result, attempt)
+                repaired.formal_spec_id = spec.id
                 repaired.attempt = attempt
                 repaired.parent_artifact_id = current.id
                 repaired.validate()
             except Exception as exc:
-                self.memory.set_spec_status(formal_spec.id, "invalid")
-                self._record_spec_graph(formal_spec, status="invalid")
-                self._record_error("repairer", formal_spec, str(exc))
+                self.memory.set_spec_status(spec.id, "invalid")
+                self._record_spec_graph(spec, "invalid")
+                self._record_error("repairer", spec, str(exc))
                 return "invalid"
             current = repaired
 
@@ -497,37 +461,25 @@ class FormalPipeline:
         proof_specs = self.proofs.list_specs(100000)
         proof_artifacts = self.proofs.list_artifacts(100000)
         proof_reviews = self.proofs.list_reviews(100000)
-        invalidated_stale = self._invalidate_stale(proof_specs)
+        conjectures = self._conjecture_records()
+        invalidated_stale = self._invalidate_stale(proof_specs, conjectures)
         candidates = self._valid_candidates()
 
-        counts = {
-            "considered": 0,
-            "attempted": 0,
-            "already": 0,
-            "formal_verified": 0,
-            "kernel_rejected": 0,
-            "repair_exhausted": 0,
-            "environment_error": 0,
-            "invalid": 0,
-            "missing_contract": 0,
-        }
-
+        considered = attempted = already = verified = exhausted = env_error = invalid = missing = 0
         verified_specs = [item for item in proof_specs if item.get("status") == "verified_natural_language"]
         for proof_spec in verified_specs[: self.max_targets]:
-            counts["considered"] += 1
+            considered += 1
             proof_spec_id = str(proof_spec["id"])
-            conjecture_id = str(proof_spec.get("conjecture_id", ""))
-            conjecture = self._conjecture_record(conjecture_id)
+            conjecture = conjectures.get(str(proof_spec.get("conjecture_id", "")))
             if conjecture is None or conjecture.get("status") != "empirically_supported":
                 continue
-
             if self.memory.has_formal_verified_for_proof_spec(proof_spec_id):
-                counts["already"] += 1
+                already += 1
                 continue
 
             contract = self.contracts.get(str(conjecture.get("statement", "")))
             if contract is None:
-                counts["missing_contract"] += 1
+                missing += 1
                 self._record_error(
                     "formal-contract",
                     None,
@@ -537,27 +489,25 @@ class FormalPipeline:
 
             proof_artifact = self._latest_verified_artifact(proof_spec_id, proof_artifacts)
             if proof_artifact is None:
-                counts["invalid"] += 1
-                self._record_error("proof-lineage", None, f"verified ProofSpec {proof_spec_id} has no verified proof artifact")
+                invalid += 1
+                self._record_error("proof-lineage", None, f"verified ProofSpec {proof_spec_id} has no verified artifact")
                 continue
-            proof_review = self._review_for_artifact(str(proof_artifact["id"]), proof_reviews)
+            proof_review = self._verified_review(str(proof_artifact["id"]), proof_reviews)
             if proof_review is None:
-                counts["invalid"] += 1
-                self._record_error("proof-lineage", None, f"verified proof artifact {proof_artifact['id']} has no verified review")
+                invalid += 1
+                self._record_error(
+                    "proof-lineage",
+                    None,
+                    f"verified proof artifact {proof_artifact['id']} has no verified independent review",
+                )
                 continue
 
             try:
-                formal_spec = self._formal_spec_from_contract(
-                    proof_spec,
-                    proof_artifact,
-                    conjecture,
-                    contract,
-                )
+                formal_spec = self._formal_spec(proof_spec, proof_artifact, conjecture, contract)
             except Exception as exc:
-                counts["invalid"] += 1
+                invalid += 1
                 self._record_error("formal-contract", None, str(exc))
                 continue
-
             context = self._build_context(
                 formal_spec,
                 proof_spec,
@@ -566,30 +516,27 @@ class FormalPipeline:
                 conjecture,
                 candidates,
             )
-            counts["attempted"] += 1
+            attempted += 1
             status = self._attempt(formal_spec, context)
             if status == "formal_verified":
-                counts["formal_verified"] += 1
+                verified += 1
             elif status == "environment_error":
-                counts["environment_error"] += 1
+                env_error += 1
             elif status == "repair_exhausted":
-                counts["repair_exhausted"] += 1
-            elif status == "kernel_rejected":
-                counts["kernel_rejected"] += 1
+                exhausted += 1
             else:
-                counts["invalid"] += 1
+                invalid += 1
 
         summary = FormalRunSummary(
-            considered_proofs=counts["considered"],
-            attempted_formalizations=counts["attempted"],
-            already_formal_verified=counts["already"],
-            formal_verified=counts["formal_verified"],
-            kernel_rejected=counts["kernel_rejected"],
-            repair_exhausted=counts["repair_exhausted"],
-            environment_error=counts["environment_error"],
-            invalid=counts["invalid"],
+            considered_proofs=considered,
+            attempted_formalizations=attempted,
+            already_formal_verified=already,
+            formal_verified=verified,
+            repair_exhausted=exhausted,
+            environment_error=env_error,
+            invalid=invalid,
             invalidated_stale=invalidated_stale,
-            missing_contract=counts["missing_contract"],
+            missing_contract=missing,
             formal_manifest_fingerprint=self.formal_manifest_fingerprint,
             workspace=str(self.workspace),
         )
