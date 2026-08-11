@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .candidates import Candidate, CandidateDB
-from .conjectures import ConjectureMemory
+from .conjectures import ConjectureMemory, Predicate
 from .formal import FormalArtifact, FormalMemory, FormalStatus, FormalizationSpec, KernelResult
 from .formal_agents import FormalContext, Formalizer, FormalRepairer
 from .graph import ResearchGraph, ResearchNode
@@ -34,7 +34,13 @@ class FormalRunSummary:
 
 
 class FormalPipeline:
-    """v0.6 Lean formalization + kernel verification stage."""
+    """v0.6 Lean formalization + kernel verification stage.
+
+    Contracts are matched against both the exact natural-language conjecture
+    statement and the normalized v0.4 machine predicate. This prevents two
+    conjectures with identical prose but different executable semantics from
+    silently sharing the same Lean target.
+    """
 
     def __init__(
         self,
@@ -114,7 +120,12 @@ class FormalPipeline:
         self._ensure_manifest(formal_manifest)
 
     @staticmethod
-    def _validate_contracts(raw_contracts: list[Any]) -> dict[str, dict[str, Any]]:
+    def _contract_key(statement: str, predicate: dict[str, Any]) -> str:
+        normalized = Predicate.from_dict(dict(predicate)).to_dict()
+        return stable_json_hash({"statement": statement.strip(), "predicate": normalized})
+
+    @classmethod
+    def _validate_contracts(cls, raw_contracts: list[Any]) -> dict[str, dict[str, Any]]:
         contracts: dict[str, dict[str, Any]] = {}
         for index, raw in enumerate(raw_contracts):
             if not isinstance(raw, dict):
@@ -122,23 +133,29 @@ class FormalPipeline:
             statement = str(raw.get("conjecture_statement", "")).strip()
             if not statement:
                 raise ValueError(f"formal contract #{index} requires conjecture_statement")
-            if statement in contracts:
-                raise ValueError(f"duplicate formal contract for conjecture statement: {statement!r}")
+            raw_predicate = raw.get("conjecture_predicate")
+            if not isinstance(raw_predicate, dict):
+                raise ValueError(f"formal contract #{index} requires conjecture_predicate object")
+            normalized_predicate = Predicate.from_dict(dict(raw_predicate)).to_dict()
+            key = cls._contract_key(statement, normalized_predicate)
+            if key in contracts:
+                raise ValueError(f"duplicate formal contract for statement/predicate pair: {statement!r}")
             imports = raw.get("imports", [])
             if not isinstance(imports, list):
                 raise ValueError(f"formal contract #{index} imports must be a list")
-            metadata = raw.get("metadata", {})
-            if not isinstance(metadata, dict):
+            contract_metadata = raw.get("metadata", {})
+            if not isinstance(contract_metadata, dict):
                 raise ValueError(f"formal contract #{index} metadata must be an object")
-            contracts[statement] = {
+            contracts[key] = {
                 "conjecture_statement": statement,
+                "conjecture_predicate": normalized_predicate,
                 "backend": str(raw.get("backend", "lean4")),
                 "toolchain": str(raw.get("toolchain", "leanprover/lean4:v4.30.0")),
                 "theorem_name": str(raw.get("theorem_name", "")).strip(),
                 "theorem_signature": str(raw.get("theorem_signature", "")).strip(),
                 "imports": [str(item) for item in imports],
                 "preamble": str(raw.get("preamble", "")),
-                "metadata": dict(metadata),
+                "metadata": dict(contract_metadata),
             }
         return contracts
 
@@ -160,7 +177,7 @@ class FormalPipeline:
             "fingerprint": stable_json_hash(stable),
             "inputs": stable,
             "truth_policy": (
-                "formal_verified is granted only by the configured Lean kernel gate on the frozen imports/preamble/theorem signature. "
+                "formal_verified is granted only by the configured Lean kernel gate on a frozen statement+predicate formal contract. "
                 "Natural-language actors cannot directly assign formal_verified."
             ),
         }
@@ -214,6 +231,8 @@ class FormalPipeline:
         conjecture: dict[str, Any],
         contract: dict[str, Any],
     ) -> FormalizationSpec:
+        metadata = dict(contract.get("metadata", {}))
+        metadata["frozen_conjecture_predicate"] = dict(contract["conjecture_predicate"])
         spec = FormalizationSpec(
             proof_spec_id=str(proof_spec["id"]),
             proof_artifact_id=str(proof_artifact["id"]),
@@ -226,7 +245,7 @@ class FormalPipeline:
             backend=str(contract["backend"]),
             toolchain=str(contract["toolchain"]),
             generation=self.source_generation,
-            metadata=dict(contract.get("metadata", {})),
+            metadata=metadata,
         )
         spec.validate()
         return spec
@@ -255,9 +274,7 @@ class FormalPipeline:
             evidence.append(candidate)
             known.add(candidate.id)
         observation_ids = set(conjecture.get("observation_ids", []))
-        observations = [
-            item for item in self.conjectures.recent_observations(1000) if item.get("id") in observation_ids
-        ]
+        observations = [item for item in self.conjectures.recent_observations(1000) if item.get("id") in observation_ids]
         return FormalContext(
             problem=self.problem,
             generation=self.source_generation,
@@ -272,7 +289,7 @@ class FormalPipeline:
             metadata={
                 "domain": self.domain,
                 "truth_policy": (
-                    "The Lean imports, preamble definitions, and theorem signature are frozen. "
+                    "The conjecture statement+machine predicate, Lean imports, preamble definitions, and theorem signature are frozen. "
                     "Empirical/natural-language evidence is context only; formal_verified requires the Lean kernel gate."
                 ),
             },
@@ -477,13 +494,24 @@ class FormalPipeline:
                 already += 1
                 continue
 
-            contract = self.contracts.get(str(conjecture.get("statement", "")))
+            predicate = conjecture.get("predicate")
+            if not isinstance(predicate, dict):
+                invalid += 1
+                self._record_error("formal-contract", None, "conjecture has no machine predicate")
+                continue
+            try:
+                contract_key = self._contract_key(str(conjecture.get("statement", "")), predicate)
+            except (TypeError, ValueError) as exc:
+                invalid += 1
+                self._record_error("formal-contract", None, f"could not normalize conjecture predicate: {exc}")
+                continue
+            contract = self.contracts.get(contract_key)
             if contract is None:
                 missing += 1
                 self._record_error(
                     "formal-contract",
                     None,
-                    f"no frozen formal contract for conjecture: {conjecture.get('statement', '')}",
+                    f"no frozen formal contract for exact conjecture statement+predicate: {conjecture.get('statement', '')}",
                 )
                 continue
 
