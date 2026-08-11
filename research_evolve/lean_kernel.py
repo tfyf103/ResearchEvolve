@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shlex
 import subprocess
@@ -65,6 +66,15 @@ class LeanKernel:
         match = re.search(r"(?:^|:)v?(\d+\.\d+\.\d+)$", toolchain.strip())
         return match.group(1) if match else None
 
+    @staticmethod
+    def _toolchain_env(toolchain: str) -> dict[str, str]:
+        env = os.environ.copy()
+        # Elan honors ELAN_TOOLCHAIN as an explicit override. For direct Lean
+        # binaries this extra variable is harmless, while Elan proxies keep the
+        # frozen toolchain even after ResearchEvolve changes cwd to a temp dir.
+        env["ELAN_TOOLCHAIN"] = toolchain
+        return env
+
     @classmethod
     def _forbidden_token(cls, source: str) -> str | None:
         for token in cls._FORBIDDEN_WORDS:
@@ -108,7 +118,7 @@ class LeanKernel:
             return [], None
         return [item.strip() for item in raw.split(",") if item.strip()], None
 
-    def _detect_version(self) -> tuple[str | None, str, str, int | None, str | None]:
+    def _detect_version(self, toolchain: str) -> tuple[str | None, str, str, int | None, str | None]:
         try:
             completed = subprocess.run(
                 [*self.command, "--version"],
@@ -116,6 +126,7 @@ class LeanKernel:
                 capture_output=True,
                 timeout=self.timeout_seconds,
                 check=False,
+                env=self._toolchain_env(toolchain),
             )
         except FileNotFoundError as exc:
             return None, "", str(exc), None, "lean-command-not-found"
@@ -209,7 +220,7 @@ class LeanKernel:
             )
             return result, source
 
-        detected, version_stdout, version_stderr, version_code, version_error = self._detect_version()
+        detected, version_stdout, version_stderr, version_code, version_error = self._detect_version(spec.toolchain)
         if version_error is not None or detected != expected:
             message = (
                 f"Lean version mismatch: expected {expected}, detected {detected}"
@@ -245,6 +256,7 @@ class LeanKernel:
                     timeout=self.timeout_seconds,
                     check=False,
                     cwd=temp_dir,
+                    env=self._toolchain_env(spec.toolchain),
                 )
         except FileNotFoundError as exc:
             result = KernelResult(
