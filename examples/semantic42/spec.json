@@ -4,7 +4,7 @@
   "domain": "generic",
   "mode": "metric_search",
   "objectives": [
-    {"name": "distance", "direction": "minimize", "weight": 1.0}
+    {"name": "distance_to_42", "direction": "minimize", "weight": 1.0}
   ],
   "constraints": [],
   "behavior_dimensions": ["representation"],
