@@ -19,3 +19,4 @@ if "FormalProject42.distance_nonnegative" in premises:
         "rationale": f"The frozen premise directly closes {target}.",
     })
 json.dump({"candidates": candidates}, sys.stdout)
+

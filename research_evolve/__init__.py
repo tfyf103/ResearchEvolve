@@ -87,3 +87,4 @@ __all__ = [
     "ProofSearchFormalizer",
 ]
 __version__ = "0.9.0"
+

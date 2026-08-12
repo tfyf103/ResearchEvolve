@@ -166,3 +166,4 @@ def test_lean_trace_parser_preserves_multiple_goals_and_local_context() -> None:
         ("left", ("P : Prop", "h : P"), "P"),
         ("right", ("Q : Prop",), "Q"),
     ]
+

@@ -385,3 +385,4 @@ pytest -q
 GitHub Actions 在 Python 3.10 / 3.12 上执行从早期 smoke tests 到 v0.8 的完整链，并安装固定 Lean toolchain 运行真实 Lean/Lake 集成验证。
 
 `formal_verified` 的最终边界始终是：**生成模型不能自己授予这个状态。**
+

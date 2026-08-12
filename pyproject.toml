@@ -20,3 +20,4 @@ research-evolve = "research_evolve.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["research_evolve*"]
+
