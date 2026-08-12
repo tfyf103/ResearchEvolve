@@ -1,0 +1,24 @@
+{
+  "schema_version": 2,
+  "toolchain": "leanprover/lean4:v4.30.0",
+  "lakefile": {
+    "path": "lakefile.toml",
+    "sha256": "17d66eb894bacc7095fb60131629e4993aff23df9755d0a9543f9e4b694f637f"
+  },
+  "manifest": null,
+  "source_roots": ["."],
+  "extra_paths": [],
+  "files": [
+    {
+      "path": "FormalProject42.lean",
+      "sha256": "b410934b1c923a5daaa2a68645d2d9a1731eff70216346ee377f5070435cdb68"
+    },
+    {
+      "path": "FormalProject42/Premises.lean",
+      "sha256": "8daa0a850cbf9a5383ca9f342b3266f3509c4fc949d3f5ad0255ff907d5f1322"
+    }
+  ],
+  "dependencies": [],
+  "dependency_cache_files": [],
+  "fingerprint": "490c8802bd32ae64dacefd0b4bd01618fb9b677680e2115a570183faf09d2987"
+}
