@@ -2,9 +2,9 @@
 
 > **A research harness for AI-driven mathematical discovery.**
 
-ResearchEvolve 把 **演化搜索、LLM 研究提案、自动评测、经验猜想、反例攻击、自然语言证明、独立验证、Lean 形式化验证、冻结 Lean/Lake 工程与形式化 premise retrieval** 放进同一个可审计、可恢复、可复现的科研执行环境。
+ResearchEvolve 把 **演化搜索、LLM 研究提案、自动评测、经验猜想、反例攻击、自然语言证明、独立验证、Lean 形式化验证、冻结 Lean/Lake 工程、目标条件化 premise retrieval 与预算化证明搜索** 放进同一个可审计、可恢复、可复现的科研执行环境。
 
-当前版本：**v0.7.0**
+当前版本：**v0.8.0**
 
 ## 核心思想
 
@@ -291,7 +291,7 @@ research-evolve formalize \
   --max-repairs 2
 ```
 
-注意：`formalize` 需要当前 workspace 已经具有前序 research/conjecture/proof lineage。CI 中的 `formal_project42` 会实际执行 v0.4 → v0.5 → v0.7 全链。
+注意：`formalize` 需要当前 workspace 已经具有前序 research/conjecture/proof lineage。CI 中的 `formal_project42` 会实际执行 v0.4 → v0.5 → v0.8 全链。
 
 查看检索与工程验证记录：
 
@@ -342,6 +342,7 @@ research-evolve project-checks \
 | v0.5 | ProofSpec / lemma DAG / Prover / independent NL Verifier |
 | v0.6 | frozen formal contract / Lean kernel / repair loop / axiom audit |
 | **v0.7** | **frozen Lean/Lake project / dependency-byte lock / premise retrieval / Lake build / `leanchecker --fresh`** |
+| **v0.8** | **typed declaration DB / dependency graph / goal-conditioned retrieval / repair-time retrieval / proof-search budgets** |
 
 详细设计：
 
@@ -376,6 +377,6 @@ parameter legality conditions
 pytest -q
 ```
 
-GitHub Actions 在 Python 3.10 / 3.12 上执行从早期 smoke tests 到 v0.7 的完整链，并安装固定 Lean toolchain 运行真实 Lean/Lake 集成验证。
+GitHub Actions 在 Python 3.10 / 3.12 上执行从早期 smoke tests 到 v0.8 的完整链，并安装固定 Lean toolchain 运行真实 Lean/Lake 集成验证。
 
 `formal_verified` 的最终边界始终是：**生成模型不能自己授予这个状态。**

@@ -120,7 +120,7 @@ jobs:
           sources = list((workspace / 'formal_sources').glob('*.lean'))
           assert len(sources) >= 2, sources
           PY
-      - name: v0.7 frozen Lake project retrieval and leanchecker fresh smoke test
+      - name: v0.8 frozen Lake project goal-conditioned retrieval and leanchecker fresh smoke test
         run: |
           mkdir -p .researchevolve/v07-generated
           research-evolve lean-project-lock \
@@ -134,8 +134,11 @@ jobs:
           research-evolve premise-search \
             --premise-index examples/formal_project42/premise-index.json \
             --query "distance nonnegative Nat zero" \
+            --goal "0 ≤ d" \
             --module FormalProject42.Premises \
-            --limit 4
+            --limit 4 \
+            --candidate-budget 100 \
+            --dependency-budget 4
           python - <<'PY'
           import json
           from pathlib import Path
@@ -144,6 +147,8 @@ jobs:
           assert generated_lock['fingerprint'] == frozen_lock['fingerprint'], (generated_lock, frozen_lock)
           generated_index = json.loads(Path('.researchevolve/v07-generated/premise-index.json').read_text())
           frozen_index = json.loads(Path('examples/formal_project42/premise-index.json').read_text())
+          assert generated_index['schema_version'] == 2, generated_index
+          assert all('type_features' in premise and 'dependencies' in premise for premise in generated_index['premises'])
           assert generated_index['fingerprint'] == frozen_index['fingerprint'], (generated_index, frozen_index)
           spec = json.loads(Path('examples/formal_project42/spec.json').read_text())
           metadata = spec['metadata']['formal_contracts'][0]['metadata']
@@ -174,6 +179,9 @@ jobs:
             --project-build-target FormalProject42 \
             --premise-index examples/formal_project42/premise-index.json \
             --premise-limit 4 \
+            --premise-candidate-budget 100 \
+            --premise-dependency-budget 4 \
+            --premise-context-budget 12000 \
             --max-targets 4 \
             --max-repairs 2
           research-evolve premise-selections --workspace .researchevolve/ci-formal-project42 --limit 3
@@ -192,11 +200,14 @@ jobs:
           assert check['passed'] is True, check
           assert check['checker_command'][-2:] == ['--fresh', 'ResearchEvolveGenerated'], check
           conn = sqlite3.connect(workspace / 'formal_retrieval.sqlite3')
-          row = conn.execute('SELECT payload FROM premise_selections ORDER BY created_at DESC LIMIT 1').fetchone()
+          rows = conn.execute('SELECT payload FROM premise_selections ORDER BY created_at').fetchall()
           conn.close()
-          selection = json.loads(row[0])
-          names = {item['name'] for item in selection['selected']}
-          assert 'FormalProject42.distance_nonnegative' in names, selection
+          selections = [json.loads(row[0]) for row in rows]
+          assert [selection['round'] for selection in selections] == [0, 1], selections
+          names = {item['name'] for selection in selections for item in selection['selected']}
+          assert 'FormalProject42.distance_nonnegative' in names, selections
+          assert all(selection['budget']['max_candidates'] == 100 for selection in selections), selections
+          assert all(selection['stats']['candidates_scanned'] <= 100 for selection in selections), selections
           manifest = json.loads((workspace / 'formal_manifest.json').read_text())
           frozen_index = json.loads(Path('examples/formal_project42/premise-index.json').read_text())
           assert manifest['inputs']['premise_index_fingerprint'] == frozen_index['fingerprint']

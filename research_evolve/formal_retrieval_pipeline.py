@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import asdict
+import json
 from pathlib import Path
 from typing import Any
 
-from .formal import FormalizationSpec
+from .formal import FormalizationSpec, KernelResult
 from .formal_agents import FormalContext, FormalRepairer, Formalizer
 from .formal_pipeline import FormalPipeline
 from .formal_retrieval import FormalRetrievalMemory, PremiseSelection, PremiseSelector
@@ -13,7 +15,7 @@ from .reproducibility import stable_json_hash
 
 
 class RetrievalFormalPipeline(FormalPipeline):
-    """v0.7 FormalPipeline extension that retrieves project premises before generation/repair."""
+    """v0.8 FormalPipeline extension for goal-conditioned generation/repair retrieval."""
 
     def __init__(
         self,
@@ -45,12 +47,14 @@ class RetrievalFormalPipeline(FormalPipeline):
         stable["premise_selector"] = self.premise_selector.name
         stable["premise_index_fingerprint"] = self.premise_selector.index.fingerprint
         stable["premise_project_fingerprint"] = self.premise_selector.index.project_fingerprint
-        manifest["schema_version"] = 2
+        stable["proof_search_budget"] = asdict(self.premise_selector.budget)
+        manifest["schema_version"] = 3
         manifest["inputs"] = stable
         manifest["fingerprint"] = stable_json_hash(stable)
         manifest["truth_policy"] = (
             "formal_verified is granted only by the configured Lean gate on the frozen statement+predicate contract. "
-            "v0.7 premise retrieval is advisory and content-addressed; it cannot change frozen imports, definitions, theorem signature, project/index fingerprints, or toolchain."
+            "v0.8 goal-conditioned retrieval and dependency expansion are advisory, content-addressed, and budgeted; "
+            "they cannot change frozen imports, definitions, theorem signature, project/index fingerprints, or toolchain."
         )
         return manifest
 
@@ -148,15 +152,69 @@ class RetrievalFormalPipeline(FormalPipeline):
             formal_spec_id=formal_spec.id,
             query=query,
             allowed_modules=formal_spec.imports,
+            goal_state=formal_spec.theorem_signature,
         )
         self.retrieval_memory.record(selection)
         self._record_selection_graph(selection)
         context.retrieved_premises = [item.to_dict() for item in selection.selected]
         context.metadata["premise_index_fingerprint"] = selection.index_fingerprint
         context.metadata["premise_project_fingerprint"] = self.premise_selector.index.project_fingerprint
+        context.metadata["retrieval_round"] = 0
+        context.metadata["retrieval_goal_state"] = formal_spec.theorem_signature
+        context.metadata["retrieval_budget"] = selection.budget
+        context.metadata["retrieval_stats"] = selection.stats
         context.metadata["retrieval_policy"] = (
-            "Retrieved premises are advisory and restricted to modules already present in the frozen FormalizationSpec imports."
+            "Retrieved premises are advisory, goal-conditioned, budgeted, and restricted to modules already present in the frozen FormalizationSpec imports."
         )
+        return context
+
+    def _prepare_repair_context(
+        self,
+        context: FormalContext,
+        spec: FormalizationSpec,
+        result: KernelResult,
+        attempt: int,
+    ) -> FormalContext:
+        diagnostics = "\n".join(item.message for item in result.diagnostics)
+        goal_state = "\n".join([spec.theorem_signature, diagnostics, result.stderr[-4000:]])
+        query = "\n".join([spec.theorem_name, spec.theorem_signature, diagnostics, result.stderr[-4000:]])
+        previous_names = [str(item.get("name", "")) for item in context.retrieved_premises]
+        selection = self.premise_selector.select(
+            formal_spec_id=spec.id,
+            query=query,
+            goal_state=goal_state,
+            allowed_modules=spec.imports,
+            round=attempt,
+            excluded_names=previous_names,
+        )
+        self.retrieval_memory.record(selection)
+        self._record_selection_graph(selection)
+        fresh = [item.to_dict() for item in selection.selected]
+        previous = list(context.retrieved_premises)
+        reserve_previous = min(len(previous), self.premise_selector.budget.max_results // 2)
+        fresh_limit = max(0, self.premise_selector.budget.max_results - reserve_previous)
+        ordered = [*fresh[:fresh_limit], *previous[:reserve_previous], *fresh[fresh_limit:], *previous[reserve_previous:]]
+        combined: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        context_chars = 0
+        for item in ordered:
+            name = str(item.get("name", ""))
+            if not name or name in seen:
+                continue
+            size = len(json.dumps(item, ensure_ascii=False))
+            if context_chars + size > self.premise_selector.budget.max_context_chars:
+                continue
+            combined.append(item)
+            seen.add(name)
+            context_chars += size
+            if len(combined) >= self.premise_selector.budget.max_results:
+                break
+        context.retrieved_premises = combined
+        context.metadata["retrieval_round"] = attempt
+        context.metadata["retrieval_goal_state"] = goal_state
+        context.metadata["retrieval_budget"] = selection.budget
+        context.metadata["retrieval_stats"] = selection.stats
+        context.metadata["retrieval_combined_context_chars"] = context_chars
         return context
 
     def close(self) -> None:

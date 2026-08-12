@@ -3,7 +3,7 @@
 from .conjectures import Conjecture, Counterexample, Observation, Predicate, ValueRef
 from .formal import FormalArtifact, FormalizationSpec, KernelResult, LeanDiagnostic
 from .formal_project import LeanProjectEnvironment, LeanProjectLock, LockedProjectFile
-from .formal_retrieval import Premise, PremiseIndex, PremiseSelection, PremiseSelector, ScoredPremise
+from .formal_retrieval import Premise, PremiseIndex, PremiseSelection, PremiseSelector, ProofSearchBudget, ScoredPremise
 from .formal_retrieval_pipeline import RetrievalFormalPipeline
 from .ideas import IdeaGenome, ResearchProposal, SemanticPatch
 from .project_kernel import ProjectCheckResult, ProjectLeanKernel
@@ -59,8 +59,9 @@ __all__ = [
     "ScoredPremise",
     "PremiseSelection",
     "PremiseSelector",
+    "ProofSearchBudget",
     "RetrievalFormalPipeline",
     "ProjectCheckResult",
     "ProjectLeanKernel",
 ]
-__version__ = "0.7.1"
+__version__ = "0.8.0"

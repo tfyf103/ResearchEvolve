@@ -16,7 +16,7 @@ from .formal import FormalMemory
 from .formal_agents import CommandFormalizer, CommandFormalRepairer
 from .formal_pipeline import FormalPipeline
 from .formal_project import LeanProjectEnvironment, LeanProjectLock
-from .formal_retrieval import FormalRetrievalMemory, PremiseIndex, PremiseSelector
+from .formal_retrieval import FormalRetrievalMemory, PremiseIndex, PremiseSelector, ProofSearchBudget
 from .formal_retrieval_pipeline import RetrievalFormalPipeline
 from .graph import ResearchGraph
 from .ideas import IdeaMemory
@@ -174,7 +174,13 @@ def _cmd_formalize(args: argparse.Namespace) -> int:
             index = PremiseIndex.read(args.premise_index)
             if index.project_fingerprint != project.fingerprint:
                 raise ValueError(f"premise index project fingerprint does not match configured project lock: index={index.project_fingerprint}, project={project.fingerprint}")
-            selector = PremiseSelector(index, limit=args.premise_limit)
+            budget = ProofSearchBudget(
+                max_candidates=args.premise_candidate_budget,
+                max_results=args.premise_limit,
+                max_dependency_expansions=args.premise_dependency_budget,
+                max_context_chars=args.premise_context_budget,
+            )
+            selector = PremiseSelector(index, limit=args.premise_limit, budget=budget)
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
     pipeline_cls = RetrievalFormalPipeline if selector is not None else FormalPipeline
@@ -214,8 +220,17 @@ def _cmd_premise_index(args: argparse.Namespace) -> int:
 def _cmd_premise_search(args: argparse.Namespace) -> int:
     try:
         index = PremiseIndex.read(args.premise_index)
-        selector = PremiseSelector(index, limit=args.limit)
-        selection = selector.select(formal_spec_id="cli-preview", query=args.query, allowed_modules=args.module or None)
+        budget = ProofSearchBudget(
+            max_candidates=args.candidate_budget,
+            max_results=args.limit,
+            max_dependency_expansions=args.dependency_budget,
+            max_context_chars=args.context_budget,
+        )
+        selector = PremiseSelector(index, limit=args.limit, budget=budget)
+        selection = selector.select(
+            formal_spec_id="cli-preview", query=args.query, goal_state=args.goal or args.query,
+            allowed_modules=args.module or None,
+        )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     print(json.dumps(selection.to_dict(), indent=2, ensure_ascii=False))
@@ -335,7 +350,7 @@ def _cmd_project_checks(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="research-evolve", description="ResearchEvolve v0.7 research harness")
+    parser = argparse.ArgumentParser(prog="research-evolve", description="ResearchEvolve v0.8 research harness")
     sub = parser.add_subparsers(dest="command", required=True)
     init = sub.add_parser("init", help="write a ResearchSpec JSON template")
     init.add_argument("output", nargs="?", default="research.json")
@@ -364,7 +379,7 @@ def build_parser() -> argparse.ArgumentParser:
     prove.add_argument("--evidence-context", type=int, default=24)
     prove.add_argument("--min-verifier-confidence", type=float, default=0.7)
     prove.set_defaults(func=_cmd_prove)
-    formalize = sub.add_parser("formalize", help="run v0.6 single-file or v0.7 project/fresh-replay Lean verification")
+    formalize = sub.add_parser("formalize", help="run standalone or frozen-project Lean verification with v0.8 retrieval")
     formalize.add_argument("--workspace", default=".researchevolve/run")
     formalize.add_argument("--formalizer-command", required=True)
     formalize.add_argument("--repairer-command")
@@ -374,8 +389,11 @@ def build_parser() -> argparse.ArgumentParser:
     formalize.add_argument("--lake-command", default="lake")
     formalize.add_argument("--project-build-target", action="append", help="Lake build target; repeat as needed")
     formalize.add_argument("--no-copy-dependency-cache", action="store_true", help="refuse copying .lake/packages into the isolated project")
-    formalize.add_argument("--premise-index", help="v0.7 content-addressed premise index")
+    formalize.add_argument("--premise-index", help="v0.8 content-addressed declaration database (schema 1 indexes remain readable)")
     formalize.add_argument("--premise-limit", type=int, default=12)
+    formalize.add_argument("--premise-candidate-budget", type=int, default=5000)
+    formalize.add_argument("--premise-dependency-budget", type=int, default=8)
+    formalize.add_argument("--premise-context-budget", type=int, default=24000)
     formalize.add_argument("--actor-timeout", type=float, default=60.0)
     formalize.add_argument("--kernel-timeout", type=float, default=60.0)
     formalize.add_argument("--max-targets", type=int, default=4)
@@ -389,16 +407,20 @@ def build_parser() -> argparse.ArgumentParser:
     project_lock.add_argument("--allow-unlocked-dependencies", action="store_true")
     project_lock.add_argument("--output", required=True)
     project_lock.set_defaults(func=_cmd_project_lock)
-    premise_index = sub.add_parser("premise-index", help="index theorem/lemma/def declarations from a frozen Lean project")
+    premise_index = sub.add_parser("premise-index", help="build a v0.8 typed declaration/dependency database from a frozen Lean project")
     premise_index.add_argument("--project-root", required=True)
     premise_index.add_argument("--project-lock", required=True)
     premise_index.add_argument("--output", required=True)
     premise_index.set_defaults(func=_cmd_premise_index)
-    premise_search = sub.add_parser("premise-search", help="preview deterministic v0.7 premise retrieval")
+    premise_search = sub.add_parser("premise-search", help="preview deterministic v0.8 goal-conditioned premise retrieval")
     premise_search.add_argument("--premise-index", required=True)
     premise_search.add_argument("--query", required=True)
+    premise_search.add_argument("--goal", help="current Lean goal/proof state for type-aware ranking")
     premise_search.add_argument("--module", action="append", help="restrict to a frozen import module")
     premise_search.add_argument("--limit", type=int, default=12)
+    premise_search.add_argument("--candidate-budget", type=int, default=5000)
+    premise_search.add_argument("--dependency-budget", type=int, default=8)
+    premise_search.add_argument("--context-budget", type=int, default=24000)
     premise_search.set_defaults(func=_cmd_premise_search)
     inspect = sub.add_parser("inspect", help="show highest canonical-score valid candidates")
     inspect.add_argument("--workspace", default=".researchevolve/run")
@@ -451,7 +473,7 @@ def build_parser() -> argparse.ArgumentParser:
         formal_memory.add_argument("--workspace", default=".researchevolve/run")
         formal_memory.add_argument("--limit", type=int, default=20)
         formal_memory.set_defaults(func=_cmd_formal_memory, memory_kind=memory_kind)
-    premise_selections = sub.add_parser("premise-selections", help="show v0.7 premise retrieval decisions")
+    premise_selections = sub.add_parser("premise-selections", help="show v0.8 goal-conditioned retrieval/search decisions")
     premise_selections.add_argument("--workspace", default=".researchevolve/run")
     premise_selections.add_argument("--limit", type=int, default=20)
     premise_selections.set_defaults(func=_cmd_retrieval_memory)
