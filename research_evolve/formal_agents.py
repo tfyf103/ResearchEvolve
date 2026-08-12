@@ -22,6 +22,7 @@ class FormalContext:
     conjecture: dict[str, Any]
     observations: list[dict[str, Any]] = field(default_factory=list)
     evidence_candidates: list[dict[str, Any]] = field(default_factory=list)
+    retrieved_premises: list[dict[str, Any]] = field(default_factory=list)
     previous_kernel_runs: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -108,13 +109,16 @@ class _CommandFormalActor:
     ) -> FormalArtifact:
         if not isinstance(raw, dict):
             raise RuntimeError("formal actor response must be a JSON object")
+        metadata = raw.get("metadata", {})
+        if not isinstance(metadata, dict):
+            raise RuntimeError("formal actor metadata must be a JSON object")
         artifact = FormalArtifact(
             formal_spec_id=spec.id,
             proof_term=str(raw.get("proof_term", "")),
             helper_source=str(raw.get("helper_source", "")),
             attempt=attempt,
             parent_artifact_id=parent_id,
-            metadata=dict(raw.get("metadata", {})),
+            metadata=dict(metadata),
         )
         artifact.validate()
         return artifact
@@ -126,17 +130,18 @@ class CommandFormalizer(_CommandFormalActor):
 
     def formalize(self, context: FormalContext, spec: FormalizationSpec) -> FormalArtifact:
         request = {
-            "schema_version": 1,
+            "schema_version": 2,
             "action": "formalize_lean4",
             "context": context.to_dict(),
             "formal_spec": spec.to_dict(),
             "response_contract": {
                 "proof_term": "Lean theorem body/proof term only; local have/show steps are allowed",
-                "helper_source": "must be the empty string in v0.6",
+                "helper_source": "must be the empty string",
                 "metadata": {},
             },
             "integrity_policy": (
-                "Imports, trusted preamble definitions, theorem signature/name, and toolchain are frozen. "
+                "Imports, trusted preamble definitions, theorem signature/name, project fingerprint, and toolchain are frozen. "
+                "Retrieved premises are advisory candidates from the frozen project index; they do not grant permission to change imports or the theorem target. "
                 "Do not emit top-level helpers or sorry/admit/axiom/unsafe/extern/opaque/run_tac/metaprogramming. "
                 "Empirical evidence and natural-language proofs are context, not kernel evidence."
             ),
@@ -158,7 +163,7 @@ class CommandFormalRepairer(_CommandFormalActor):
         attempt: int,
     ) -> FormalArtifact:
         request = {
-            "schema_version": 1,
+            "schema_version": 2,
             "action": "repair_lean4",
             "context": context.to_dict(),
             "formal_spec": spec.to_dict(),
@@ -167,11 +172,12 @@ class CommandFormalRepairer(_CommandFormalActor):
             "attempt": attempt,
             "response_contract": {
                 "proof_term": "replacement Lean theorem body/proof term only",
-                "helper_source": "must be the empty string in v0.6",
+                "helper_source": "must be the empty string",
                 "metadata": {},
             },
             "integrity_policy": (
-                "Repair only the theorem body. Imports, trusted preamble definitions, theorem signature/name, and toolchain cannot change. "
+                "Repair only the theorem body. Imports, trusted preamble definitions, theorem signature/name, project fingerprint, and toolchain cannot change. "
+                "Retrieved premises may be used only if they are available under the frozen imports. "
                 "Do not emit top-level helpers or sorry/admit/axiom/unsafe/extern/opaque/run_tac/metaprogramming."
             ),
         }
