@@ -1,0 +1,155 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from .formal import FormalizationSpec
+from .formal_agents import FormalContext, FormalRepairer, Formalizer
+from .formal_pipeline import FormalPipeline
+from .formal_retrieval import FormalRetrievalMemory, PremiseSelection, PremiseSelector
+from .graph import ResearchNode
+from .lean_kernel import LeanKernel
+from .reproducibility import stable_json_hash
+
+
+class RetrievalFormalPipeline(FormalPipeline):
+    """v0.7 FormalPipeline extension that retrieves project premises before generation/repair."""
+
+    def __init__(
+        self,
+        workspace: str | Path,
+        formalizer: Formalizer,
+        kernel: LeanKernel,
+        repairer: FormalRepairer | None = None,
+        *,
+        premise_selector: PremiseSelector,
+        max_targets: int = 4,
+        max_repairs: int = 2,
+        evidence_context: int = 24,
+    ) -> None:
+        self.premise_selector = premise_selector
+        super().__init__(
+            workspace,
+            formalizer,
+            kernel,
+            repairer,
+            max_targets=max_targets,
+            max_repairs=max_repairs,
+            evidence_context=evidence_context,
+        )
+        self.retrieval_memory = FormalRetrievalMemory(self.workspace / "formal_retrieval.sqlite3")
+
+    def _build_manifest(self) -> dict[str, Any]:
+        manifest = super()._build_manifest()
+        stable = dict(manifest["inputs"])
+        stable["premise_selector"] = self.premise_selector.name
+        stable["premise_index_fingerprint"] = self.premise_selector.index.fingerprint
+        stable["premise_project_fingerprint"] = self.premise_selector.index.project_fingerprint
+        manifest["schema_version"] = 2
+        manifest["inputs"] = stable
+        manifest["fingerprint"] = stable_json_hash(stable)
+        manifest["truth_policy"] = (
+            "formal_verified is granted only by the configured Lean gate on the frozen statement+predicate contract. "
+            "v0.7 premise retrieval is advisory and content-addressed; it cannot change frozen imports, definitions, theorem signature, project fingerprint, or toolchain."
+        )
+        return manifest
+
+    @staticmethod
+    def _query(
+        formal_spec: FormalizationSpec,
+        proof_spec: dict[str, Any],
+        proof_artifact: dict[str, Any],
+        conjecture: dict[str, Any],
+    ) -> str:
+        lemma_arguments = proof_artifact.get("lemma_arguments", {})
+        lemma_text = ""
+        if isinstance(lemma_arguments, dict):
+            lemma_text = " ".join(str(value) for value in lemma_arguments.values())
+        return "\n".join(
+            [
+                formal_spec.theorem_name,
+                formal_spec.theorem_signature,
+                str(conjecture.get("statement", "")),
+                str(proof_spec.get("statement", "")),
+                str(proof_artifact.get("final_argument", "")),
+                lemma_text,
+            ]
+        )
+
+    def _record_selection_graph(self, selection: PremiseSelection) -> None:
+        self.graph.add_node(
+            ResearchNode(
+                id=selection.id,
+                type="premise_selection",
+                statement=f"Selected {len(selection.selected)} formal premises",
+                status="retrieved",
+                payload=selection.to_dict(),
+                created_at=selection.created_at,
+            )
+        )
+        self.graph.add_edge(selection.id, "selects_for_formalization", selection.formal_spec_id)
+        for scored in selection.selected:
+            premise = scored.premise
+            premise_id = "premise-" + stable_json_hash(
+                {
+                    "index": selection.index_fingerprint,
+                    "module": premise.module,
+                    "name": premise.name,
+                    "statement": premise.statement,
+                }
+            )[:32]
+            self.graph.add_node(
+                ResearchNode(
+                    id=premise_id,
+                    type="formal_premise",
+                    statement=f"{premise.name} {premise.statement}".strip(),
+                    status="retrieved",
+                    payload={**premise.to_dict(), "index_fingerprint": selection.index_fingerprint, "score": scored.score},
+                )
+            )
+            self.graph.add_edge(selection.id, "selected_premise", premise_id)
+            self.graph.add_edge(premise_id, "premise_supports", selection.formal_spec_id)
+
+    def _build_context(
+        self,
+        formal_spec: FormalizationSpec,
+        proof_spec: dict[str, Any],
+        proof_artifact: dict[str, Any],
+        proof_review: dict[str, Any],
+        conjecture: dict[str, Any],
+        candidates: list[Any],
+    ) -> FormalContext:
+        context = super()._build_context(
+            formal_spec,
+            proof_spec,
+            proof_artifact,
+            proof_review,
+            conjecture,
+            candidates,
+        )
+        expected_project = str(formal_spec.metadata.get("project_fingerprint", "")).strip()
+        if expected_project and expected_project != self.premise_selector.index.project_fingerprint:
+            raise ValueError(
+                "premise index belongs to a different Lean project: "
+                f"contract={expected_project}, index={self.premise_selector.index.project_fingerprint}"
+            )
+        query = self._query(formal_spec, proof_spec, proof_artifact, conjecture)
+        selection = self.premise_selector.select(
+            formal_spec_id=formal_spec.id,
+            query=query,
+            allowed_modules=formal_spec.imports,
+        )
+        self.retrieval_memory.record(selection)
+        self._record_selection_graph(selection)
+        context.retrieved_premises = [item.to_dict() for item in selection.selected]
+        context.metadata["premise_index_fingerprint"] = selection.index_fingerprint
+        context.metadata["premise_project_fingerprint"] = self.premise_selector.index.project_fingerprint
+        context.metadata["retrieval_policy"] = (
+            "Retrieved premises are advisory and restricted to modules already present in the frozen FormalizationSpec imports."
+        )
+        return context
+
+    def close(self) -> None:
+        if hasattr(self, "retrieval_memory"):
+            self.retrieval_memory.close()
+        super().close()
