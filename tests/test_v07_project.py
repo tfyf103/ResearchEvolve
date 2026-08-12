@@ -146,6 +146,65 @@ def test_dependency_cache_is_content_addressed_and_tamper_detected(tmp_path: Pat
         lock.verify_project(root)
 
 
+def test_dependency_cache_honors_manifest_packages_dir(tmp_path: Path) -> None:
+    root = _project(tmp_path, with_dependency=True)
+    packages_dir = "vendor/lean-packages"
+    (root / "lake-manifest.json").write_text(
+        json.dumps(
+            {
+                "version": "1.2.0",
+                "packagesDir": packages_dir,
+                "packages": [
+                    {
+                        "name": "external",
+                        "scope": "",
+                        "type": "git",
+                        "url": "https://example.invalid/external",
+                        "rev": "deadbeef",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    package = root / packages_dir / "external"
+    package.mkdir(parents=True)
+    (package / "lakefile.toml").write_text('name = "external"\nversion = "0.1.0"\n', encoding="utf-8")
+    (package / "External.lean").write_text("theorem external_true : True := True.intro\n", encoding="utf-8")
+
+    lock = LeanProjectLock.capture(root)
+    assert "vendor/lean-packages/external/External.lean" not in {item.path for item in lock.files}
+    assert "external/External.lean" in {item.path for item in lock.dependency_cache_files}
+    environment = LeanProjectEnvironment.create(root, lock)
+    with environment.materialize(tmp_path / "workspace") as materialized:
+        assert (materialized / packages_dir / "external" / "External.lean").is_file()
+
+
+def test_dependency_cache_rejects_packages_dir_outside_project(tmp_path: Path) -> None:
+    root = _project(tmp_path, with_dependency=True)
+    (root / "lake-manifest.json").write_text(
+        json.dumps(
+            {
+                "version": "1.2.0",
+                "packagesDir": "../shared-packages",
+                "packages": [{"name": "external", "type": "git", "rev": "deadbeef"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="packagesDir to stay inside"):
+        LeanProjectLock.capture(root)
+
+
+def test_malformed_locked_file_entries_are_rejected(tmp_path: Path) -> None:
+    root = _project(tmp_path)
+    lock = LeanProjectLock.capture(root)
+    raw = lock.to_dict()
+    raw["files"] = ["not-an-object"]
+    with pytest.raises(ValueError, match="item #0 must be an object"):
+        LeanProjectLock.from_dict(raw)
+
+
 def test_premise_index_and_selector_are_project_bound(tmp_path: Path) -> None:
     root = _project(tmp_path)
     lock = LeanProjectLock.capture(root)
@@ -169,6 +228,20 @@ def test_premise_index_and_selector_are_project_bound(tmp_path: Path) -> None:
         allowed_modules=["Other.Module"],
     )
     assert filtered.selected == []
+
+    empty_allowlist = selector.select(
+        formal_spec_id="formal-spec",
+        query="distance nonnegative",
+        allowed_modules=[],
+    )
+    assert empty_allowlist.selected == []
+
+    unrestricted_preview = selector.select(
+        formal_spec_id="preview",
+        query="distance nonnegative",
+        allowed_modules=None,
+    )
+    assert any(item.premise.name == "Demo.distance_nonnegative" for item in unrestricted_preview.selected)
 
 
 def test_project_kernel_requires_contract_project_fingerprint(tmp_path: Path) -> None:
