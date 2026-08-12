@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "project_fingerprint": "f12cf6931e649695617d0c7796033d579d1958779c6074bfeb268ec8e53fb181",
+  "premises": [
+    {
+      "name": "FormalProject42.distance_nonnegative",
+      "module": "FormalProject42.Premises",
+      "statement": "(d : Nat) : 0 ≤ d",
+      "kind": "theorem",
+      "source_path": "FormalProject42/Premises.lean",
+      "line": 3,
+      "tags": []
+    },
+    {
+      "name": "FormalProject42.nat_reflexive",
+      "module": "FormalProject42.Premises",
+      "statement": "(d : Nat) : d = d",
+      "kind": "theorem",
+      "source_path": "FormalProject42/Premises.lean",
+      "line": 5,
+      "tags": []
+    }
+  ],
+  "fingerprint": "4613f918c84d9f4461a62b5edd38ff1ea7bffc832c82174aaeb28d1e72086453"
+}
