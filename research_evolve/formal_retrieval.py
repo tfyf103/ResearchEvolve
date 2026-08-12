@@ -273,11 +273,15 @@ class PremiseSelector:
         allowed_modules: Sequence[str] | None = None,
     ) -> PremiseSelection:
         query_tokens = set(_tokens(query))
-        allowed = set(allowed_modules or [])
+        # None means an intentionally unrestricted preview/search. An explicit empty
+        # sequence means an empty allowlist. This distinction matters for the trusted
+        # formalization path: FormalizationSpec.imports=[] must not silently expose
+        # every indexed module to the Formalizer/Repairer.
+        allowed = None if allowed_modules is None else set(allowed_modules)
         scores: list[ScoredPremise] = []
         total_docs = max(1, len(self.index.premises))
         for premise in self.index.premises:
-            if allowed and premise.module not in allowed:
+            if allowed is not None and premise.module not in allowed:
                 continue
             premise_tokens = set(_tokens(f"{premise.name} {premise.statement} {' '.join(premise.tags)}"))
             matched = sorted(query_tokens & premise_tokens)
