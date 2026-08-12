@@ -1,0 +1,76 @@
+{
+  "name": "formal-search-42-demo",
+  "problem": "Search near x=42, verify distance non-negativity, retrieve a theorem through a frozen transitive Lean import graph, and solve the formal target with budgeted proof search.",
+  "domain": "generic",
+  "mode": "hybrid",
+  "objectives": [
+    {
+      "name": "distance_to_42",
+      "direction": "minimize",
+      "weight": 1.0
+    }
+  ],
+  "constraints": [],
+  "behavior_dimensions": [
+    "representation"
+  ],
+  "budget": {
+    "generations": 1,
+    "population_size": 1,
+    "evaluator_timeout_seconds": 10,
+    "seed": 23
+  },
+  "search": {
+    "novelty_probability": 0.25,
+    "novelty_k": 3,
+    "migration_interval": 2,
+    "migrants_per_island": 1,
+    "checkpoint_interval": 1
+  },
+  "explorer": {
+    "enabled": false
+  },
+  "conjecture": {
+    "enabled": true,
+    "interval": 1,
+    "observations_per_interval": 8,
+    "conjectures_per_interval": 2,
+    "context_candidates": 8,
+    "context_conjectures": 8,
+    "counterexample_trials": 2,
+    "min_evidence": 2,
+    "timeout_seconds": 10
+  },
+  "metadata": {
+    "purpose": "v0.8 goal-conditioned transitive premise retrieval and beam proof search smoke test",
+    "proof_assumptions": [
+      "For every evaluated numeric candidate x, distance_to_42 is defined as abs(x - 42)."
+    ],
+    "formal_contracts": [
+      {
+        "conjecture_statement": "Distance to 42 is always non-negative for evaluated candidates.",
+        "conjecture_predicate": {
+          "left": {
+            "source": "metrics",
+            "key": "distance_to_42"
+          },
+          "operator": "ge",
+          "right_constant": 0
+        },
+        "backend": "lean4",
+        "toolchain": "leanprover/lean4:v4.30.0",
+        "theorem_name": "distance_to_42_nonnegative",
+        "theorem_signature": "theorem distance_to_42_nonnegative (d : Nat) : 0 ≤ d",
+        "imports": [
+          "FormalSearch42"
+        ],
+        "preamble": "",
+        "metadata": {
+          "project_fingerprint": "__PROJECT_FINGERPRINT__",
+          "formal_corpus_fingerprint": "__FORMAL_CORPUS_FINGERPRINT__",
+          "semantic_mapping": "The executable predicate metrics.distance_to_42 >= 0 is represented as non-negativity of a natural-number distance d. The proof may use only declarations transitively reachable from the frozen import FormalSearch42."
+        }
+      }
+    ]
+  }
+}

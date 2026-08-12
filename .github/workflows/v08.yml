@@ -1,0 +1,106 @@
+name: v0.8 Formal Search
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  formal-search:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install package
+        run: python -m pip install -e ".[dev]"
+      - name: Full Python tests
+        run: pytest -q
+      - name: Install pinned Lean 4
+        run: |
+          curl https://elan.lean-lang.org/elan-init.sh -sSf | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          "$HOME/.elan/bin/elan" toolchain install leanprover/lean4:v4.30.0
+      - name: Build frozen v0.8 corpus and contract
+        run: |
+          mkdir -p .researchevolve/v08-generated
+          research-evolve lean-project-lock \
+            --project-root examples/formal_search42/lean_project \
+            --source-root . \
+            --output .researchevolve/v08-generated/project-lock.json
+          research-evolve formal-corpus-index \
+            --project-root examples/formal_search42/lean_project \
+            --project-lock .researchevolve/v08-generated/project-lock.json \
+            --output .researchevolve/v08-generated/formal-corpus.sqlite3
+          python examples/formal_search42/prepare_spec.py \
+            --template examples/formal_search42/spec.template.json \
+            --project-lock .researchevolve/v08-generated/project-lock.json \
+            --formal-corpus .researchevolve/v08-generated/formal-corpus.sqlite3 \
+            --output .researchevolve/v08-generated/spec.json
+          research-evolve goal-premise-search \
+            --formal-corpus .researchevolve/v08-generated/formal-corpus.sqlite3 \
+            --import FormalSearch42 \
+            --query "distance nonnegative Nat" \
+            --limit 4
+      - name: Research and natural-language proof lineage
+        run: |
+          research-evolve run \
+            --spec .researchevolve/v08-generated/spec.json \
+            --evaluator examples/target42/evaluator.py \
+            --seeds examples/formal_search42/seeds.json \
+            --conjecturer-command "python examples/conjecture42/conjecturer.py" \
+            --workspace .researchevolve/ci-formal-search42 \
+            --islands 2
+          research-evolve prove \
+            --workspace .researchevolve/ci-formal-search42 \
+            --planner-command "python examples/proof42/planner.py" \
+            --prover-command "python examples/proof42/prover.py" \
+            --verifier-command "python examples/proof42/verifier.py" \
+            --max-conjectures 4 \
+            --max-lemmas 12 \
+            --min-verifier-confidence 0.7
+      - name: v0.8 transitive retrieval and beam formal proof search
+        run: |
+          research-evolve formal-search \
+            --workspace .researchevolve/ci-formal-search42 \
+            --formalizer-command "python examples/formal_search42/formalizer.py" \
+            --repairer-command "python examples/formal_search42/repairer.py" \
+            --project-root examples/formal_search42/lean_project \
+            --project-lock .researchevolve/v08-generated/project-lock.json \
+            --formal-corpus .researchevolve/v08-generated/formal-corpus.sqlite3 \
+            --project-build-target FormalSearch42 \
+            --beam-width 2 \
+            --branching-factor 2 \
+            --max-rounds 2 \
+            --max-kernel-attempts 6 \
+            --premise-limit 4
+          research-evolve goal-premise-selections --workspace .researchevolve/ci-formal-search42 --limit 10
+          research-evolve formal-search-events --workspace .researchevolve/ci-formal-search42 --limit 10
+          research-evolve project-checks --workspace .researchevolve/ci-formal-search42 --limit 10
+          python - <<'PY'
+          import json, sqlite3
+          from pathlib import Path
+          workspace = Path('.researchevolve/ci-formal-search42')
+          summary = json.loads((workspace / 'formal_summary.json').read_text())
+          assert summary['formal_verified'] == 1, summary
+          conn = sqlite3.connect(workspace / 'formal_goal_retrieval.sqlite3')
+          selections = [json.loads(row[0]) for row in conn.execute('SELECT payload FROM goal_premise_selections ORDER BY created_at')]
+          conn.close()
+          assert any(any(item['name'] == 'FormalSearch42.distance_nonnegative' for item in s['selected']) for s in selections), selections
+          assert any(s['diagnostics_included'] for s in selections), selections
+          conn = sqlite3.connect(workspace / 'formal_search.sqlite3')
+          events = [json.loads(row[0]) for row in conn.execute('SELECT payload FROM search_events ORDER BY created_at')]
+          conn.close()
+          assert any(e['round'] == 1 and e['variant'] == 0 and e['status'] == 'kernel_rejected' for e in events), events
+          assert any(e['round'] == 1 and e['variant'] == 1 and e['status'] == 'formal_verified' for e in events), events
+          conn = sqlite3.connect(workspace / 'formal_project.sqlite3')
+          checks = [json.loads(row[0]) for row in conn.execute('SELECT payload FROM project_checks ORDER BY created_at')]
+          conn.close()
+          assert any(c['passed'] and c['checker_command'][-2:] == ['--fresh', 'ResearchEvolveGenerated'] for c in checks), checks
+          PY
