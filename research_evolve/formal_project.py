@@ -13,7 +13,7 @@ from typing import Any, Iterator, Sequence
 from .reproducibility import sha256_file, stable_json_hash
 
 
-_LOCK_SCHEMA_VERSION = 1
+_LOCK_SCHEMA_VERSION = 2
 _EXCLUDED_DIRS = {".git", ".lake", "__pycache__"}
 
 
@@ -67,6 +67,33 @@ class LockedProjectFile:
         return {"path": self.path, "sha256": self.sha256}
 
 
+def _capture_dependency_cache(project_root: Path, dependencies: list[dict[str, Any]]) -> list[LockedProjectFile]:
+    if not dependencies:
+        return []
+    packages = project_root / ".lake" / "packages"
+    if not packages.is_dir():
+        raise ValueError(
+            "Lake manifest contains dependencies but .lake/packages is missing; run lake update/fetch before creating a reproducible project lock"
+        )
+    tracked: dict[str, LockedProjectFile] = {}
+    for path in sorted(packages.rglob("*")):
+        relative_path = path.relative_to(packages)
+        if any(part in _EXCLUDED_DIRS for part in relative_path.parts):
+            continue
+        if path.is_symlink():
+            raise ValueError(f"project lock refuses symlinked dependency-cache path: {relative_path.as_posix()}")
+        if not path.is_file():
+            continue
+        relative = relative_path.as_posix()
+        tracked[relative] = LockedProjectFile(relative, sha256_file(path))
+    files = [tracked[key] for key in sorted(tracked)]
+    if not files:
+        raise ValueError(
+            "Lake manifest contains dependencies but no lockable files were found under .lake/packages; v0.7 only supports cached package dependencies"
+        )
+    return files
+
+
 @dataclass(slots=True)
 class LeanProjectLock:
     """Content-addressed lock for a Lean/Lake project used by formal verification."""
@@ -78,6 +105,7 @@ class LeanProjectLock:
     extra_paths: list[str] = field(default_factory=list)
     manifest: LockedProjectFile | None = None
     dependencies: list[dict[str, Any]] = field(default_factory=list)
+    dependency_cache_files: list[LockedProjectFile] = field(default_factory=list)
     fingerprint: str = ""
     schema_version: int = _LOCK_SCHEMA_VERSION
 
@@ -91,6 +119,7 @@ class LeanProjectLock:
         extra_paths: list[str],
         manifest: LockedProjectFile | None,
         dependencies: list[dict[str, Any]],
+        dependency_cache_files: list[LockedProjectFile],
     ) -> dict[str, Any]:
         return {
             "toolchain": toolchain.strip(),
@@ -100,6 +129,7 @@ class LeanProjectLock:
             "extra_paths": list(extra_paths),
             "files": [item.to_dict() for item in files],
             "dependencies": dependencies,
+            "dependency_cache_files": [item.to_dict() for item in dependency_cache_files],
         }
 
     @classmethod
@@ -145,6 +175,7 @@ class LeanProjectLock:
                 "Lake project declares dependencies but has no lake-manifest.json; run lake update first or explicitly allow unlocked dependencies"
             )
 
+        dependency_cache_files = _capture_dependency_cache(project_root, dependencies)
         roots = [_normalize_rel(item) for item in (source_roots or ["."])]
         extras = [_normalize_rel(item) for item in (extra_paths or [])]
         tracked: dict[str, LockedProjectFile] = {}
@@ -184,6 +215,7 @@ class LeanProjectLock:
             extra_paths=extras,
             manifest=manifest,
             dependencies=dependencies,
+            dependency_cache_files=dependency_cache_files,
         )
         return cls(
             toolchain=toolchain,
@@ -193,8 +225,19 @@ class LeanProjectLock:
             extra_paths=extras,
             manifest=manifest,
             dependencies=dependencies,
+            dependency_cache_files=dependency_cache_files,
             fingerprint=stable_json_hash(stable),
         )
+
+    @staticmethod
+    def _locked_files(raw: Any, label: str) -> list[LockedProjectFile]:
+        if not isinstance(raw, list):
+            raise ValueError(f"Lean project lock {label} must be a list")
+        return [
+            LockedProjectFile(str(item.get("path", "")), str(item.get("sha256", "")))
+            for item in raw
+            if isinstance(item, dict)
+        ]
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "LeanProjectLock":
@@ -204,16 +247,15 @@ class LeanProjectLock:
         if not isinstance(lakefile_raw, dict):
             raise ValueError("Lean project lock requires lakefile")
         manifest_raw = raw.get("manifest")
-        files_raw = raw.get("files", [])
-        if not isinstance(files_raw, list):
-            raise ValueError("Lean project lock files must be a list")
+        files = cls._locked_files(raw.get("files", []), "files")
+        dependency_cache_files = cls._locked_files(raw.get("dependency_cache_files", []), "dependency_cache_files")
         dependencies = raw.get("dependencies", [])
         if not isinstance(dependencies, list) or not all(isinstance(item, dict) for item in dependencies):
             raise ValueError("Lean project lock dependencies must be a list of objects")
         lock = cls(
             toolchain=str(raw.get("toolchain", "")),
             lakefile=LockedProjectFile(str(lakefile_raw.get("path", "")), str(lakefile_raw.get("sha256", ""))),
-            files=[LockedProjectFile(str(item.get("path", "")), str(item.get("sha256", ""))) for item in files_raw if isinstance(item, dict)],
+            files=files,
             source_roots=[_normalize_rel(item) for item in raw.get("source_roots", ["."])],
             extra_paths=[_normalize_rel(item) for item in raw.get("extra_paths", [])],
             manifest=(
@@ -222,6 +264,7 @@ class LeanProjectLock:
                 else None
             ),
             dependencies=[dict(item) for item in dependencies],
+            dependency_cache_files=dependency_cache_files,
             fingerprint=str(raw.get("fingerprint", "")),
             schema_version=int(raw.get("schema_version", _LOCK_SCHEMA_VERSION)),
         )
@@ -235,25 +278,34 @@ class LeanProjectLock:
             raise ValueError("Lean project lock must contain a JSON object")
         return cls.from_dict(raw)
 
+    @staticmethod
+    def _validate_file_list(files: list[LockedProjectFile], label: str) -> None:
+        paths = [item.path for item in files]
+        if len(paths) != len(set(paths)):
+            raise ValueError(f"Lean project lock contains duplicate {label} paths")
+        if paths != sorted(paths):
+            raise ValueError(f"Lean project lock {label} must be sorted")
+        for item in files:
+            _normalize_rel(item.path)
+            if not re.fullmatch(r"[0-9a-f]{64}", item.sha256):
+                raise ValueError(f"invalid sha256 for locked {label} file {item.path!r}")
+
     def validate(self) -> None:
         if not self.toolchain.strip():
             raise ValueError("Lean project lock toolchain must not be empty")
-        if not self.lakefile.path or not self.lakefile.sha256:
-            raise ValueError("Lean project lock lakefile is incomplete")
+        if not self.lakefile.path or not re.fullmatch(r"[0-9a-f]{64}", self.lakefile.sha256):
+            raise ValueError("Lean project lock lakefile is incomplete or has invalid sha256")
         if self.lakefile.path not in {"lakefile.toml", "lakefile.lean"}:
             raise ValueError("Lean project lock lakefile must be lakefile.toml or lakefile.lean")
-        paths = [item.path for item in self.files]
-        if len(paths) != len(set(paths)):
-            raise ValueError("Lean project lock contains duplicate tracked files")
-        if paths != sorted(paths):
-            raise ValueError("Lean project lock tracked files must be sorted")
-        for item in self.files:
-            _normalize_rel(item.path)
-            if not re.fullmatch(r"[0-9a-f]{64}", item.sha256):
-                raise ValueError(f"invalid sha256 for locked project file {item.path!r}")
+        self._validate_file_list(self.files, "tracked files")
+        self._validate_file_list(self.dependency_cache_files, "dependency cache files")
         if self.manifest is not None:
             if self.manifest.path != "lake-manifest.json" or not re.fullmatch(r"[0-9a-f]{64}", self.manifest.sha256):
                 raise ValueError("invalid locked lake-manifest.json")
+        if self.dependencies and not self.dependency_cache_files:
+            raise ValueError("locked dependencies require content-addressed dependency_cache_files")
+        if self.dependency_cache_files and not self.dependencies:
+            raise ValueError("dependency_cache_files are not allowed without locked manifest dependencies")
         stable = self._stable_payload(
             toolchain=self.toolchain,
             lakefile=self.lakefile,
@@ -262,6 +314,7 @@ class LeanProjectLock:
             extra_paths=self.extra_paths,
             manifest=self.manifest,
             dependencies=self.dependencies,
+            dependency_cache_files=self.dependency_cache_files,
         )
         expected = stable_json_hash(stable)
         if self.fingerprint != expected:
@@ -279,6 +332,7 @@ class LeanProjectLock:
                 extra_paths=self.extra_paths,
                 manifest=self.manifest,
                 dependencies=self.dependencies,
+                dependency_cache_files=self.dependency_cache_files,
             ),
             "fingerprint": self.fingerprint,
         }
@@ -370,15 +424,15 @@ class LeanProjectEnvironment:
                 copy_relative(item.path)
 
             if self.lock.dependencies:
-                packages = self.root / ".lake" / "packages"
                 if not self.copy_dependency_cache:
                     raise ValueError(
                         "frozen project has dependencies but copy_dependency_cache=false; v0.7 refuses a network-dependent sandbox"
                     )
-                if not packages.is_dir():
-                    raise ValueError(
-                        "frozen project has dependencies but .lake/packages is missing; resolve/cache dependencies before formal verification"
-                    )
-                shutil.copytree(packages, destination / ".lake" / "packages", symlinks=False)
+                packages = self.root / ".lake" / "packages"
+                for item in self.lock.dependency_cache_files:
+                    source = _assert_regular_file(packages, item.path)
+                    target = destination / ".lake" / "packages" / item.path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, target)
 
             yield destination
