@@ -461,6 +461,7 @@ class FormalPipeline:
 
             attempt += 1
             context.previous_kernel_runs.append(result.to_dict())
+            context = self._prepare_repair_context(context, spec, result, attempt)
             try:
                 repaired = self.repairer.repair(context, spec, current, result, attempt)
                 repaired.formal_spec_id = spec.id
@@ -473,6 +474,16 @@ class FormalPipeline:
                 self._record_error("repairer", spec, str(exc))
                 return "invalid"
             current = repaired
+
+    def _prepare_repair_context(
+        self,
+        context: FormalContext,
+        spec: FormalizationSpec,
+        result: KernelResult,
+        attempt: int,
+    ) -> FormalContext:
+        """Extension hook for goal-conditioned retrieval before a repair attempt."""
+        return context
 
     def run(self) -> FormalRunSummary:
         proof_specs = self.proofs.list_specs(100000)

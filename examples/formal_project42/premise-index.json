@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "project_fingerprint": "490c8802bd32ae64dacefd0b4bd01618fb9b677680e2115a570183faf09d2987",
   "premises": [
     {
@@ -9,7 +9,14 @@
       "kind": "theorem",
       "source_path": "FormalProject42/Premises.lean",
       "line": 3,
-      "tags": []
+      "tags": [],
+      "type_features": [
+        "0",
+        "d",
+        "le",
+        "nat"
+      ],
+      "dependencies": []
     },
     {
       "name": "FormalProject42.nat_reflexive",
@@ -18,8 +25,14 @@
       "kind": "theorem",
       "source_path": "FormalProject42/Premises.lean",
       "line": 5,
-      "tags": []
+      "tags": [],
+      "type_features": [
+        "d",
+        "eq",
+        "nat"
+      ],
+      "dependencies": []
     }
   ],
-  "fingerprint": "1bfd52fd2c0f8fe0deecd227461faba0c3d301a86043e6119a474656378fe4d2"
+  "fingerprint": "bf5c36834835101d36f106afce1c8c1d5facf846db6afe3c549947defc113bd2"
 }
