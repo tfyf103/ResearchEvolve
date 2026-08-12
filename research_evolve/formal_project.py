@@ -343,11 +343,15 @@ class LeanProjectLock:
         destination.write_text(json.dumps(self.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
 
     def verify_project(self, root: str | Path) -> None:
+        # Certification is intentionally stricter than lock capture. A developer may
+        # capture an unlocked dependency declaration for inspection, but any project
+        # used by premise indexing or ProjectLeanKernel must resolve dependencies into
+        # lake-manifest.json + content-addressed .lake/packages sources.
         current = LeanProjectLock.capture(
             root,
             source_roots=self.source_roots,
             extra_paths=self.extra_paths,
-            allow_unlocked_dependencies=self.manifest is None and not self.dependencies,
+            allow_unlocked_dependencies=False,
         )
         if current.fingerprint != self.fingerprint:
             raise ValueError(
