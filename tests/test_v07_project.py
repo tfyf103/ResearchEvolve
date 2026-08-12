@@ -32,6 +32,33 @@ def _project(tmp_path: Path, *, with_dependency: bool = False) -> Path:
     return root
 
 
+def _add_locked_dependency(root: Path) -> Path:
+    (root / "lake-manifest.json").write_text(
+        json.dumps(
+            {
+                "version": "1.1.0",
+                "packagesDir": ".lake/packages",
+                "packages": [
+                    {
+                        "name": "external",
+                        "scope": "",
+                        "type": "git",
+                        "url": "https://example.invalid/external",
+                        "rev": "deadbeef",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    package = root / ".lake" / "packages" / "external"
+    package.mkdir(parents=True)
+    (package / "lakefile.toml").write_text('name = "external"\nversion = "0.1.0"\n', encoding="utf-8")
+    source = package / "External.lean"
+    source.write_text("theorem external_true : True := True.intro\n", encoding="utf-8")
+    return source
+
+
 def _fake_lake(path: Path, *, checker_fails: bool = False) -> None:
     path.write_text(
         "\n".join(
@@ -86,6 +113,7 @@ def _spec(project_fingerprint: str) -> FormalizationSpec:
 def test_project_lock_roundtrip_and_mutation_detection(tmp_path: Path) -> None:
     root = _project(tmp_path)
     lock = LeanProjectLock.capture(root)
+    assert [item.path for item in lock.files] == sorted(item.path for item in lock.files)
     path = tmp_path / "project-lock.json"
     lock.write(path)
     loaded = LeanProjectLock.read(path)
@@ -102,6 +130,20 @@ def test_project_with_dependencies_requires_manifest(tmp_path: Path) -> None:
     root = _project(tmp_path, with_dependency=True)
     with pytest.raises(ValueError, match="has no lake-manifest.json"):
         LeanProjectLock.capture(root)
+
+
+def test_dependency_cache_is_content_addressed_and_tamper_detected(tmp_path: Path) -> None:
+    root = _project(tmp_path, with_dependency=True)
+    dependency_source = _add_locked_dependency(root)
+    lock = LeanProjectLock.capture(root)
+    assert lock.dependencies
+    assert lock.dependency_cache_files
+    assert [item.path for item in lock.dependency_cache_files] == sorted(item.path for item in lock.dependency_cache_files)
+    lock.verify_project(root)
+
+    dependency_source.write_text("theorem external_true : False := by sorry\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="no longer matches frozen project lock"):
+        lock.verify_project(root)
 
 
 def test_premise_index_and_selector_are_project_bound(tmp_path: Path) -> None:
