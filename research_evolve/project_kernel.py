@@ -105,17 +105,32 @@ class ProjectLeanKernel(LeanKernel):
         environment: LeanProjectEnvironment,
         *,
         timeout_seconds: float = 60.0,
+        fresh_checker_timeout_seconds: float = 300.0,
     ) -> None:
+        if fresh_checker_timeout_seconds <= 0:
+            raise ValueError("fresh checker timeout must be positive")
         super().__init__([*environment.lake_command, "env", "lean"], timeout_seconds=timeout_seconds)
         self.environment = environment
+        self.fresh_checker_timeout_seconds = float(fresh_checker_timeout_seconds)
 
     @property
     def name(self) -> str:
-        return f"lean-project-kernel:{self.environment.fingerprint[:16]}:leanchecker-fresh"
+        return (
+            f"lean-project-kernel:{self.environment.fingerprint[:16]}:leanchecker-fresh:"
+            f"compile-timeout={self.timeout_seconds:g}:fresh-timeout={self.fresh_checker_timeout_seconds:g}"
+        )
 
     @staticmethod
     def _combined(*parts: str) -> str:
         return "\n".join(part for part in parts if part)
+
+    @staticmethod
+    def _timeout_text(value: str | bytes | None) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return value
 
     def _record(self, workspace: str | Path, check: ProjectCheckResult) -> None:
         memory = ProjectCheckMemory(Path(workspace) / "formal_project.sqlite3")
@@ -131,6 +146,11 @@ class ProjectLeanKernel(LeanKernel):
         source: str,
         reason: str,
         message: str,
+        *,
+        command: list[str] | None = None,
+        detected_version: str | None = None,
+        stdout: str = "",
+        stderr: str = "",
     ) -> tuple[KernelResult, str]:
         digest = __import__("hashlib").sha256(source.encode("utf-8")).hexdigest()
         return (
@@ -138,10 +158,12 @@ class ProjectLeanKernel(LeanKernel):
                 formal_artifact_id=artifact.id,
                 passed=False,
                 status="environment_error",
-                command=[*self.environment.lake_command, "env", "lean"],
+                command=command or [*self.environment.lake_command, "env", "lean"],
                 expected_toolchain=spec.toolchain,
-                detected_version=None,
+                detected_version=detected_version,
                 exit_code=None,
+                stdout=stdout,
+                stderr=stderr,
                 diagnostics=[LeanDiagnostic(severity="error", message=message)],
                 gate_reason=reason,
                 source_sha256=digest,
@@ -249,6 +271,10 @@ class ProjectLeanKernel(LeanKernel):
                         source,
                         "toolchain-version-mismatch",
                         f"expected Lean {expected_version}, detected {detected}",
+                        command=version_command,
+                        detected_version=detected,
+                        stdout=version.stdout,
+                        stderr=version.stderr,
                     )
 
                 build_command = [*self.environment.lake_command, "build", *self.environment.build_targets]
@@ -273,6 +299,10 @@ class ProjectLeanKernel(LeanKernel):
                         source,
                         "project-build-failed",
                         "frozen Lake project failed to build before generated theorem checking",
+                        command=build_command,
+                        detected_version=detected,
+                        stdout=build.stdout,
+                        stderr=build.stderr,
                     )
 
                 output_dir = project / ".lake" / "build" / "lib" / "lean"
@@ -359,15 +389,38 @@ class ProjectLeanKernel(LeanKernel):
                     "--fresh",
                     self.GENERATED_MODULE,
                 ]
-                checker = subprocess.run(
-                    checker_command,
-                    cwd=project,
-                    text=True,
-                    capture_output=True,
-                    timeout=self.timeout_seconds,
-                    check=False,
-                )
+                # Record the intended checker command before starting the subprocess so
+                # timeout/crash audits remain truthful.
                 check.checker_command = checker_command
+                try:
+                    checker = subprocess.run(
+                        checker_command,
+                        cwd=project,
+                        text=True,
+                        capture_output=True,
+                        timeout=self.fresh_checker_timeout_seconds,
+                        check=False,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    check.gate_reason = "fresh-checker-timeout"
+                    check.checker_stdout = self._timeout_text(exc.stdout)
+                    check.checker_stderr = self._timeout_text(exc.stderr)
+                    self._record(workspace, check)
+                    return self._environment_result(
+                        spec,
+                        artifact,
+                        source,
+                        "fresh-checker-timeout",
+                        (
+                            "leanchecker --fresh did not complete within the dedicated "
+                            f"{self.fresh_checker_timeout_seconds:g}s verification budget"
+                        ),
+                        command=checker_command,
+                        detected_version=detected,
+                        stdout=check.checker_stdout,
+                        stderr=check.checker_stderr,
+                    )
+
                 check.checker_exit_code = checker.returncode
                 check.checker_stdout = checker.stdout
                 check.checker_stderr = checker.stderr
@@ -424,21 +477,19 @@ class ProjectLeanKernel(LeanKernel):
         except subprocess.TimeoutExpired as exc:
             check.gate_reason = "project-check-timeout"
             self._record(workspace, check)
-            result = KernelResult(
-                formal_artifact_id=artifact.id,
-                passed=False,
-                status="kernel_rejected",
+            stdout = self._timeout_text(exc.stdout)
+            stderr = self._timeout_text(exc.stderr)
+            return self._environment_result(
+                spec,
+                artifact,
+                source,
+                "project-check-timeout",
+                "project version/build/Lean compilation did not complete within the configured timeout",
                 command=[*self.environment.lake_command],
-                expected_toolchain=spec.toolchain,
                 detected_version=expected_version,
-                exit_code=None,
-                stdout=exc.stdout or "",
-                stderr=exc.stderr or "",
-                diagnostics=[LeanDiagnostic(severity="error", message="project build/kernel/fresh checker timed out")],
-                gate_reason="project-check-timeout",
-                source_sha256=digest,
+                stdout=stdout,
+                stderr=stderr,
             )
-            return result, source
         except ValueError as exc:
             check.gate_reason = "project-lock-validation-failed"
             self._record(workspace, check)
