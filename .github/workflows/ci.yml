@@ -1,3 +1,4 @@
+
 name: CI
 
 on:
@@ -248,15 +249,19 @@ jobs:
           from pathlib import Path
           workspace = Path('.researchevolve/ci-formal-search42')
           summary = json.loads((workspace / 'formal_summary.json').read_text())
-          assert summary['formal_verified'] == 1, summary
-          assert summary['search_exhausted'] == 0, summary
           conn = sqlite3.connect(workspace / 'formal_search.sqlite3')
           run = json.loads(conn.execute("SELECT summary FROM search_runs ORDER BY updated_at DESC LIMIT 1").fetchone()[0])
-          attempts = conn.execute('SELECT tactic, status FROM tactic_attempts').fetchall()
+          attempts = conn.execute('SELECT tactic, status, diagnostics FROM tactic_attempts').fetchall()
           conn.close()
+          print(json.dumps({'formal_summary': summary, 'proof_search': run, 'attempts': attempts}, indent=2))
+          errors = workspace / 'formal_errors.jsonl'
+          if errors.exists():
+              print(errors.read_text())
+          assert summary['formal_verified'] == 1, summary
+          assert summary['search_exhausted'] == 0, summary
           assert run['status'] == 'formalized', run
           assert run['states_created'] == 2 and run['lean_calls'] == 2, run
-          assert attempts == [('exact FormalProject42.distance_nonnegative d', 'succeeded')], attempts
+          assert [(row[0], row[1]) for row in attempts] == [('exact FormalProject42.distance_nonnegative d', 'succeeded')], attempts
           source = next((workspace / 'formal_sources').glob('*.lean')).read_text()
           assert 'sorry' not in source and 'all_goals trace_state' not in source, source
           conn = sqlite3.connect(workspace / 'formal_project.sqlite3')
