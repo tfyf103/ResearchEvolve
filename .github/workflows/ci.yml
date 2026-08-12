@@ -198,5 +198,5 @@ jobs:
           names = {item['name'] for item in selection['selected']}
           assert 'FormalProject42.distance_nonnegative' in names, selection
           manifest = json.loads((workspace / 'formal_manifest.json').read_text())
-          assert manifest['inputs']['premise_index_fingerprint'] == '4613f918c84d9f4461a62b5edd38ff1ea7bffc832c82174aaeb28d1e72086453'
+          assert manifest['inputs']['premise_index_fingerprint'] == '82d6bd86975aae7471425b7c57c77fb9ac91e4b9942e917476b80f803fef061c'
           PY
