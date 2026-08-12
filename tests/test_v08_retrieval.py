@@ -149,6 +149,7 @@ def test_repair_context_retrieves_from_kernel_diagnostics_and_records_round(tmp_
 
     assert recorded[0].round == 1
     assert "distance_nonnegative" in recorded[0].query
+    assert recorded[0].selected[0].premise.name == "Demo.distance_nonnegative"
     assert updated.metadata["retrieval_round"] == 1
     assert updated.retrieved_premises[0]["name"] == "Demo.distance_nonnegative"
 
@@ -182,3 +183,34 @@ def test_repair_context_keeps_previous_useful_premise_within_total_budget(tmp_pa
     assert "Demo.distance_nonnegative" in names
     assert len(updated.retrieved_premises) <= selector.budget.max_results
     assert updated.metadata["retrieval_combined_context_chars"] <= selector.budget.max_context_chars
+
+
+def test_incremental_repair_journal_may_be_empty_when_prior_round_already_found_everything(tmp_path: Path) -> None:
+    _, _, index = _project(tmp_path)
+    selector = PremiseSelector(index, limit=4)
+    pipeline = object.__new__(RetrievalFormalPipeline)
+    pipeline.premise_selector = selector
+    recorded = []
+    pipeline.retrieval_memory = type("Memory", (), {"record": lambda self, selection: recorded.append(selection)})()
+    pipeline._record_selection_graph = lambda selection: None
+    spec = FormalizationSpec(
+        proof_spec_id="proof", proof_artifact_id="artifact", conjecture_id="conjecture",
+        conjecture_statement="statement", theorem_name="target",
+        theorem_signature="theorem target (d : Nat) : 0 ≤ d", imports=["Demo.Premises"],
+    )
+    previous = [item.to_dict() for item in index.premises]
+    context = FormalContext(
+        problem="problem", generation=1, formal_spec=spec.to_dict(), proof_spec={}, proof_artifact={},
+        proof_review={}, conjecture={}, retrieved_premises=previous,
+    )
+    result = KernelResult(
+        formal_artifact_id="artifact", passed=False, status="kernel_rejected", command=["lean"],
+        expected_toolchain=TOOLCHAIN, detected_version="4.30.0", exit_code=1,
+        diagnostics=[LeanDiagnostic(severity="error", message="Nat goal remains")],
+    )
+
+    updated = pipeline._prepare_repair_context(context, spec, result, 1)
+
+    assert recorded[0].round == 1
+    assert recorded[0].selected == []
+    assert {item["name"] for item in updated.retrieved_premises} == {item.name for item in index.premises}

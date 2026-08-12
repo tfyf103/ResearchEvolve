@@ -200,13 +200,14 @@ jobs:
           assert check['passed'] is True, check
           assert check['checker_command'][-2:] == ['--fresh', 'ResearchEvolveGenerated'], check
           conn = sqlite3.connect(workspace / 'formal_retrieval.sqlite3')
-          row = conn.execute('SELECT payload FROM premise_selections ORDER BY created_at DESC LIMIT 1').fetchone()
+          rows = conn.execute('SELECT payload FROM premise_selections ORDER BY created_at').fetchall()
           conn.close()
-          selection = json.loads(row[0])
-          names = {item['name'] for item in selection['selected']}
-          assert 'FormalProject42.distance_nonnegative' in names, selection
-          assert selection['budget']['max_candidates'] == 100, selection
-          assert selection['stats']['candidates_scanned'] <= 100, selection
+          selections = [json.loads(row[0]) for row in rows]
+          assert [selection['round'] for selection in selections] == [0, 1], selections
+          names = {item['name'] for selection in selections for item in selection['selected']}
+          assert 'FormalProject42.distance_nonnegative' in names, selections
+          assert all(selection['budget']['max_candidates'] == 100 for selection in selections), selections
+          assert all(selection['stats']['candidates_scanned'] <= 100 for selection in selections), selections
           manifest = json.loads((workspace / 'formal_manifest.json').read_text())
           frozen_index = json.loads(Path('examples/formal_project42/premise-index.json').read_text())
           assert manifest['inputs']['premise_index_fingerprint'] == frozen_index['fingerprint']
