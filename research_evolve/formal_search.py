@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 import heapq
@@ -277,6 +278,7 @@ class FrozenLeanProofWorker:
     _DIAGNOSTIC_MARKER_RE = re.compile(
         r"(?m)^[^\n]*?\.lean:\d+:\d+:\s+(?P<severity>info|warning|error):\s*"
     )
+    _SORRY_WARNING_RE = re.compile(r"declaration uses ['‘]?sorry", re.IGNORECASE)
 
     def __init__(self, environment: LeanProjectEnvironment, *, timeout_seconds: float = 60.0) -> None:
         if timeout_seconds <= 0:
@@ -335,6 +337,10 @@ class FrozenLeanProofWorker:
             goals.append(LeanGoal(target.strip(), tuple(lines), case_name))
         return goals
 
+    @classmethod
+    def _probe_protocol_error(cls, output: str, tactics: Sequence[str], goals: Sequence[LeanGoal]) -> bool:
+        return bool(tactics) and not goals and cls._SORRY_WARNING_RE.search(output) is not None
+
     def _probe(self, spec: FormalizationSpec, tactics: Sequence[str], parent: LeanProofState | None) -> TacticTransition:
         if self._project is None:
             return TacticTransition("environment_error", diagnostics="Lean worker requires an active frozen-project session")
@@ -356,7 +362,7 @@ class FrozenLeanProofWorker:
         if completed.returncode != 0:
             return TacticTransition("failed", diagnostics=output.strip(), elapsed_seconds=time.monotonic() - started)
         goals = self._parse_goals(output)
-        if not goals and re.search(r"declaration uses ['‘]?sorry", output, re.IGNORECASE):
+        if self._probe_protocol_error(output, tactics, goals):
             return TacticTransition(
                 "protocol_error", diagnostics="Lean probe used sorry but emitted no parseable proof state; refusing false completion",
                 elapsed_seconds=time.monotonic() - started,

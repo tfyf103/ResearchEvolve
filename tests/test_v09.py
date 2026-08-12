@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 
 from contextlib import nullcontext
@@ -154,6 +155,8 @@ def test_worker_refuses_false_closed_state_and_keeps_instrumentation_out_of_arti
 
     malformed = "SearchProbe.lean:1:1: warning: declaration uses 'sorry'"
     assert FrozenLeanProofWorker._parse_goals(malformed) == []
+    assert FrozenLeanProofWorker._probe_protocol_error(malformed, [], []) is False
+    assert FrozenLeanProofWorker._probe_protocol_error(malformed, ["exact h"], []) is True
 
 
 def test_lean_trace_parser_preserves_multiple_goals_and_local_context() -> None:
