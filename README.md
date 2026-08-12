@@ -1,5 +1,7 @@
 # ResearchEvolve
 
+> Current release: v1.1 Codex Plugin MVP. See [docs/V1.1.md](docs/V1.1.md) for installation, tools, security boundaries, and scope.
+
 > **A research harness for AI-driven mathematical discovery.**
 
 ResearchEvolve 把 **演化搜索、LLM 研究提案、自动评测、经验猜想、反例攻击、自然语言证明、独立验证、Lean 形式化验证、冻结 Lean/Lake 工程、目标条件化 premise retrieval 与预算化证明搜索** 放进同一个可审计、可恢复、可复现的科研执行环境。

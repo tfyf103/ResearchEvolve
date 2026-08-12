@@ -19,9 +19,24 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install Python package
-        run: python -m pip install -e ".[dev]"
+        run: python -m pip install -e ".[dev,plugin]"
       - name: Test
         run: pytest -q
+      - name: v1.1 Codex plugin validation and doctor
+        run: |
+          python -m research_evolve.plugin.cli --root . doctor
+          research-evolve-mcp --help
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          plugin = json.loads(Path('plugins/research-evolve/.codex-plugin/plugin.json').read_text())
+          marketplace = json.loads(Path('.agents/plugins/marketplace.json').read_text())
+          assert plugin['version'] == '1.1.0' and plugin['mcpServers'] == './.mcp.json'
+          assert marketplace['plugins'][0]['source']['path'] == './plugins/research-evolve'
+          for skill in Path('plugins/research-evolve/skills').glob('*/SKILL.md'):
+              text = skill.read_text()
+              assert text.startswith('---\nname: ') and 'TODO' not in text
+          PY
       - name: v0.2 CLI smoke test
         run: |
           research-evolve run \

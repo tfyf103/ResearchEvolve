@@ -1,0 +1,11 @@
+{
+  "name": "my-research-project",
+  "problem": "State the mathematical problem precisely.",
+  "domain": "generic",
+  "mode": "metric_search",
+  "objectives": [{"name": "quality", "direction": "maximize", "weight": 1.0}],
+  "constraints": [],
+  "behavior_dimensions": ["representation"],
+  "budget": {"generations": 20, "population_size": 32, "evaluator_timeout_seconds": 30, "seed": 0},
+  "metadata": {}
+}

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "research-evolve"
-version = "1.0.0"
+version = "1.1.0"
 description = "A research harness for AI-driven mathematical discovery"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,10 +12,13 @@ authors = [{name = "ResearchEvolve contributors"}]
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24"]
+plugin = ["mcp>=1.12,<2"]
 
 [project.scripts]
 research-evolve = "research_evolve.cli:main"
+research-evolve-plugin = "research_evolve.plugin.cli:main"
+research-evolve-mcp = "research_evolve.plugin.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

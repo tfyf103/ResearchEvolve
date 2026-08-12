@@ -1,0 +1,4 @@
+interface:
+  display_name: "Research Diagnosis"
+  short_description: "Diagnose verification gates, runs, and certificates"
+  default_prompt: "Inspect a ResearchEvolve project, explain why an artifact has or lacks a trusted status, and verify or export its certificate."
