@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "backend": "lean4",
+  "toolchain": "leanprover/lean4:v4.30.0",
+  "project_fingerprint": "490c8802bd32ae64dacefd0b4bd01618fb9b677680e2115a570183faf09d2987",
+  "premise_index_fingerprint": "bf5c36834835101d36f106afce1c8c1d5facf846db6afe3c549947defc113bd2",
+  "allowed_axioms": ["propext", "Classical.choice", "Quot.sound"],
+  "symbols": [
+    {
+      "source": "metrics",
+      "key": "distance_to_42",
+      "math_type": "Nat",
+      "lean_name": "d",
+      "imports": ["FormalProject42.Premises"],
+      "semantic_version": "distance-to-42-v1",
+      "meaning": "The non-negative integer abs(x - 42) produced by examples/target42/evaluator.py.",
+      "test_values": [0, 1, 2, 42],
+      "evaluator_sha256": "8d934d8b540dc250b2dc889951010e38b3b0f39f015c8215ae808c07062eb9cf"
+    }
+  ]
+}

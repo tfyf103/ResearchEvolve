@@ -1,6 +1,7 @@
 """ResearchEvolve public API."""
 
 from .conjectures import Conjecture, Counterexample, Observation, Predicate, ValueRef
+from .certificate import CertificateVerification, ResearchCertificate
 from .formal import FormalArtifact, FormalizationSpec, KernelResult, LeanDiagnostic
 from .formal_project import LeanProjectEnvironment, LeanProjectLock, LockedProjectFile
 from .formal_retrieval import Premise, PremiseIndex, PremiseSelection, PremiseSelector, ProofSearchBudget, ScoredPremise
@@ -35,6 +36,18 @@ from .spec import (
     Objective,
     ResearchSpec,
     SearchPolicy,
+)
+from .semantic_bridge import (
+    CertifiedSemanticBridge,
+    MathExpr,
+    PredicateIRCompiler,
+    SemanticAuditFailure,
+    SemanticAuditMemory,
+    SemanticAuditResult,
+    SemanticContractCompiler,
+    SemanticRegistry,
+    TrustedSymbol,
+    UnsupportedSemantics,
 )
 
 __all__ = [
@@ -85,6 +98,17 @@ __all__ = [
     "CommandTacticGenerator",
     "FrozenLeanProofWorker",
     "ProofSearchFormalizer",
+    "MathExpr",
+    "TrustedSymbol",
+    "SemanticRegistry",
+    "PredicateIRCompiler",
+    "SemanticContractCompiler",
+    "SemanticAuditResult",
+    "SemanticAuditMemory",
+    "CertifiedSemanticBridge",
+    "UnsupportedSemantics",
+    "SemanticAuditFailure",
+    "ResearchCertificate",
+    "CertificateVerification",
 ]
-__version__ = "0.9.0"
-
+__version__ = "1.0.0"

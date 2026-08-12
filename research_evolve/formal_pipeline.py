@@ -7,13 +7,18 @@ from typing import Any
 
 from .candidates import Candidate, CandidateDB
 from .conjectures import ConjectureMemory, Predicate
-from .formal import FormalArtifact, FormalMemory, FormalStatus, FormalizationSpec, KernelResult
+from .formal import DEFAULT_ALLOWED_LEAN_AXIOMS, FormalArtifact, FormalMemory, FormalStatus, FormalizationSpec, KernelResult
 from .formal_agents import FormalContext, Formalizer, FormalRepairer
 from .formal_search import ProofSearchEnvironmentError, ProofSearchExhausted
 from .graph import ResearchGraph, ResearchNode
 from .lean_kernel import LeanKernel
 from .proofs import ProofMemory
 from .reproducibility import stable_json_hash
+from .semantic_bridge import (
+    CertifiedSemanticBridge,
+    SemanticAuditFailure,
+    UnsupportedSemantics,
+)
 
 
 @dataclass(slots=True)
@@ -28,6 +33,9 @@ class FormalRunSummary:
     invalid: int
     invalidated_stale: int
     missing_contract: int
+    certified_contracts: int
+    unsupported_semantics: int
+    semantic_audit_rejected: int
     formal_manifest_fingerprint: str
     workspace: str
 
@@ -54,6 +62,7 @@ class FormalPipeline:
         max_targets: int = 4,
         max_repairs: int = 2,
         evidence_context: int = 24,
+        semantic_bridge: CertifiedSemanticBridge | None = None,
     ) -> None:
         if max_targets < 1 or max_repairs < 0 or evidence_context < 1:
             raise ValueError("formal pipeline size/repair limits are invalid")
@@ -64,6 +73,7 @@ class FormalPipeline:
         self.max_targets = int(max_targets)
         self.max_repairs = int(max_repairs)
         self.evidence_context = int(evidence_context)
+        self.semantic_bridge = semantic_bridge
 
         required = {
             "source_manifest": self.workspace / "manifest.json",
@@ -103,6 +113,20 @@ class FormalPipeline:
         if not isinstance(raw_contracts, list):
             raise ValueError("ResearchSpec.metadata.formal_contracts must be a list")
         self.contracts = self._validate_contracts(raw_contracts)
+        if self.semantic_bridge is not None:
+            raw_evaluators = self.source_manifest.get("inputs", {}).get("evaluators", [])
+            evaluator_hashes = {
+                str(item.get("sha256", ""))
+                for item in raw_evaluators
+                if isinstance(item, dict)
+            }
+            required_hashes = {item.evaluator_sha256 for item in self.semantic_bridge.registry.symbols}
+            missing_hashes = sorted(required_hashes - evaluator_hashes)
+            if missing_hashes:
+                raise ValueError(
+                    "semantic registry references evaluator implementations absent from the research manifest: "
+                    + ", ".join(missing_hashes)
+                )
 
         formal_db = self.workspace / "formal.sqlite3"
         formal_manifest = self.workspace / "formal_manifest.json"
@@ -157,6 +181,9 @@ class FormalPipeline:
                 "theorem_signature": str(raw.get("theorem_signature", "")).strip(),
                 "imports": [str(item) for item in imports],
                 "preamble": str(raw.get("preamble", "")),
+                "allowed_axioms": [
+                    str(item) for item in raw.get("allowed_axioms", DEFAULT_ALLOWED_LEAN_AXIOMS)
+                ],
                 "metadata": dict(contract_metadata),
             }
         return contracts
@@ -173,6 +200,9 @@ class FormalPipeline:
             "max_repairs": self.max_repairs,
             "evidence_context": self.evidence_context,
             "formal_contracts_hash": stable_json_hash(self.contracts),
+            "semantic_bridge_fingerprint": (
+                self.semantic_bridge.fingerprint if self.semantic_bridge is not None else None
+            ),
         }
         return {
             "schema_version": 1,
@@ -244,6 +274,7 @@ class FormalPipeline:
             theorem_signature=str(contract["theorem_signature"]),
             imports=list(contract["imports"]),
             preamble=str(contract.get("preamble", "")),
+            allowed_axioms=list(contract["allowed_axioms"]),
             backend=str(contract["backend"]),
             toolchain=str(contract["toolchain"]),
             generation=self.source_generation,
@@ -310,6 +341,41 @@ class FormalPipeline:
         )
         self.graph.add_edge(spec.id, "formalizes_proof", spec.proof_spec_id)
         self.graph.add_edge(spec.id, "formal_target_for", spec.conjecture_id)
+        audit_fingerprint = str(spec.metadata.get("semantic_audit_fingerprint", ""))
+        if audit_fingerprint:
+            contract_fingerprint = str(spec.metadata.get("source_semantics_fingerprint", ""))
+            contract_node_id = f"semantic-contract-{contract_fingerprint[:32]}"
+            audit_node_id = f"semantic-audit-{audit_fingerprint[:32]}"
+            self.graph.add_node(
+                ResearchNode(
+                    id=contract_node_id,
+                    type="semantic_contract",
+                    statement=spec.theorem_signature,
+                    status="certified_formal_contract",
+                    payload={
+                        "source_semantics_fingerprint": contract_fingerprint,
+                        "ir_fingerprint": spec.metadata.get("ir_fingerprint"),
+                        "registry_fingerprint": spec.metadata.get("registry_fingerprint"),
+                        "project_fingerprint": spec.metadata.get("project_fingerprint"),
+                        "premise_index_fingerprint": spec.metadata.get("premise_index_fingerprint"),
+                    },
+                )
+            )
+            self.graph.add_node(
+                ResearchNode(
+                    id=audit_node_id,
+                    type="semantic_audit",
+                    statement=f"Independent semantic audit checked {spec.metadata.get('semantic_audit_checked_vectors', 0)} vectors",
+                    status="passed",
+                    payload={
+                        "fingerprint": audit_fingerprint,
+                        "checked_vectors": spec.metadata.get("semantic_audit_checked_vectors", 0),
+                    },
+                )
+            )
+            self.graph.add_edge(contract_node_id, "compiled_from_conjecture", spec.conjecture_id)
+            self.graph.add_edge(audit_node_id, "audits_semantic_contract", contract_node_id)
+            self.graph.add_edge(spec.id, "freezes_certified_contract", contract_node_id)
 
     def _record_artifact_graph(self, artifact: FormalArtifact, source: str, status: FormalStatus) -> None:
         self.graph.add_node(
@@ -506,6 +572,7 @@ class FormalPipeline:
         candidates = self._valid_candidates()
 
         considered = attempted = already = verified = search_exhausted = exhausted = env_error = invalid = missing = 0
+        certified = unsupported = audit_rejected = 0
         verified_specs = [item for item in proof_specs if item.get("status") == "verified_natural_language"]
         for proof_spec in verified_specs[: self.max_targets]:
             considered += 1
@@ -530,13 +597,30 @@ class FormalPipeline:
                 continue
             contract = self.contracts.get(contract_key)
             if contract is None:
-                missing += 1
-                self._record_error(
-                    "formal-contract",
-                    None,
-                    f"no frozen formal contract for exact conjecture statement+predicate: {conjecture.get('statement', '')}",
-                )
-                continue
+                if self.semantic_bridge is None:
+                    missing += 1
+                    self._record_error(
+                        "formal-contract",
+                        None,
+                        f"no frozen formal contract for exact conjecture statement+predicate: {conjecture.get('statement', '')}",
+                    )
+                    continue
+                try:
+                    contract = self.semantic_bridge.compile_and_audit(
+                        str(conjecture.get("id", "")),
+                        str(conjecture.get("statement", "")),
+                        Predicate.from_dict(dict(predicate)),
+                        candidates,
+                    )
+                    certified += 1
+                except UnsupportedSemantics as exc:
+                    unsupported += 1
+                    self._record_error("unsupported-semantics", None, str(exc))
+                    continue
+                except SemanticAuditFailure as exc:
+                    audit_rejected += 1
+                    self._record_error("semantic-audit", None, str(exc))
+                    continue
 
             proof_artifact = self._latest_verified_artifact(proof_spec_id, proof_artifacts)
             if proof_artifact is None:
@@ -591,6 +675,9 @@ class FormalPipeline:
             invalid=invalid,
             invalidated_stale=invalidated_stale,
             missing_contract=missing,
+            certified_contracts=certified,
+            unsupported_semantics=unsupported,
+            semantic_audit_rejected=audit_rejected,
             formal_manifest_fingerprint=self.formal_manifest_fingerprint,
             workspace=str(self.workspace),
         )
@@ -609,6 +696,8 @@ class FormalPipeline:
         close_formalizer = getattr(self.formalizer, "close", None)
         if callable(close_formalizer):
             close_formalizer()
+        if self.semantic_bridge is not None:
+            self.semantic_bridge.close()
 
     def __enter__(self) -> "FormalPipeline":
         return self

@@ -12,6 +12,7 @@ from .formal_retrieval import FormalRetrievalMemory, PremiseSelection, PremiseSe
 from .graph import ResearchNode
 from .lean_kernel import LeanKernel
 from .reproducibility import stable_json_hash
+from .semantic_bridge import CertifiedSemanticBridge
 
 
 class RetrievalFormalPipeline(FormalPipeline):
@@ -28,6 +29,7 @@ class RetrievalFormalPipeline(FormalPipeline):
         max_targets: int = 4,
         max_repairs: int = 2,
         evidence_context: int = 24,
+        semantic_bridge: CertifiedSemanticBridge | None = None,
     ) -> None:
         self.premise_selector = premise_selector
         super().__init__(
@@ -38,6 +40,7 @@ class RetrievalFormalPipeline(FormalPipeline):
             max_targets=max_targets,
             max_repairs=max_repairs,
             evidence_context=evidence_context,
+            semantic_bridge=semantic_bridge,
         )
         self.retrieval_memory = FormalRetrievalMemory(self.workspace / "formal_retrieval.sqlite3")
 

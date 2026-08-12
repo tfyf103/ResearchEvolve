@@ -22,10 +22,14 @@ def main() -> int:
     distance = abs(x - 42.0)
     score = -distance
     magnitude_bucket = "small" if abs(x) < 20 else "medium" if abs(x) < 80 else "large"
+    # Preserve the exact Nat codomain promised by the v1.0 semantic registry.
+    # Non-integral search points remain valid but are deliberately unsupported
+    # for formal certification and will fail the independent semantic audit.
+    certified_distance = int(distance) if distance.is_integer() else distance
     result = {
         "valid": True,
         "score": score,
-        "metrics": {"distance_to_42": distance, "x": x},
+        "metrics": {"distance_to_42": certified_distance, "x": x},
         "behavior": {
             "representation": str(candidate.get("representation", "direct")),
             "magnitude_bucket": magnitude_bucket

@@ -270,4 +270,63 @@ jobs:
           assert check['passed'] is True, check
           assert check['checker_command'][-2:] == ['--fresh', 'ResearchEvolveGenerated'], check
           PY
-
+      - name: v1.0 certified semantic bridge and portable certificate fresh replay
+        run: |
+          research-evolve semantic-registry \
+            --registry examples/formal_project42/semantic-registry.json
+          research-evolve run \
+            --spec examples/formal_project42/spec_v10.json \
+            --evaluator examples/target42/evaluator.py \
+            --seeds examples/formal_project42/seeds.json \
+            --conjecturer-command "python examples/conjecture42/conjecturer.py" \
+            --workspace .researchevolve/ci-v10 \
+            --islands 2
+          research-evolve prove \
+            --workspace .researchevolve/ci-v10 \
+            --planner-command "python examples/proof42/planner.py" \
+            --prover-command "python examples/proof42/prover.py" \
+            --verifier-command "python examples/proof42/verifier.py" \
+            --max-conjectures 4 \
+            --max-lemmas 12 \
+            --min-verifier-confidence 0.7
+          research-evolve formalize \
+            --workspace .researchevolve/ci-v10 \
+            --tactic-generator-command "python examples/formal_project42/tactic_generator.py" \
+            --project-root examples/formal_project42/lean_project \
+            --project-lock examples/formal_project42/project-lock.json \
+            --project-build-target FormalProject42 \
+            --premise-index examples/formal_project42/premise-index.json \
+            --semantic-registry examples/formal_project42/semantic-registry.json \
+            --premise-limit 4 \
+            --search-max-states 8 \
+            --search-max-depth 4 \
+            --search-max-lean-calls 8 \
+            --search-max-model-calls 4 \
+            --search-max-retrieval-calls 4 \
+            --search-wall-seconds 120
+          research-evolve semantic-contracts --workspace .researchevolve/ci-v10 --limit 2
+          research-evolve certificate-export \
+            --workspace .researchevolve/ci-v10 \
+            --semantic-registry examples/formal_project42/semantic-registry.json \
+            --project-lock examples/formal_project42/project-lock.json \
+            --premise-index examples/formal_project42/premise-index.json \
+            --output .researchevolve/ci-v10-certificate
+          research-evolve certificate-verify \
+            --certificate .researchevolve/ci-v10-certificate \
+            --project-root examples/formal_project42/lean_project \
+            --timeout 300
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          workspace = Path('.researchevolve/ci-v10')
+          summary = json.loads((workspace / 'formal_summary.json').read_text())
+          assert summary['formal_verified'] == 1, summary
+          assert summary['certified_contracts'] == 1, summary
+          assert summary['missing_contract'] == 0, summary
+          assert summary['unsupported_semantics'] == 0, summary
+          assert summary['semantic_audit_rejected'] == 0, summary
+          spec = json.loads(Path('examples/formal_project42/spec_v10.json').read_text())
+          assert not spec['metadata'].get('formal_contracts'), spec
+          certificate = json.loads(Path('.researchevolve/ci-v10-certificate/certificate.json').read_text())
+          assert certificate['fingerprint'], certificate
+          PY
