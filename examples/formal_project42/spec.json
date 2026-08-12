@@ -1,0 +1,63 @@
+{
+  "name": "formal-project-42-demo",
+  "problem": "Search near x=42, verify the distance non-negativity conjecture, retrieve a premise from a frozen Lean project, and replay the generated theorem with leanchecker --fresh.",
+  "domain": "generic",
+  "mode": "hybrid",
+  "objectives": [
+    {"name": "distance_to_42", "direction": "minimize", "weight": 1.0}
+  ],
+  "constraints": [],
+  "behavior_dimensions": ["representation"],
+  "budget": {
+    "generations": 1,
+    "population_size": 1,
+    "evaluator_timeout_seconds": 10,
+    "seed": 17
+  },
+  "search": {
+    "novelty_probability": 0.25,
+    "novelty_k": 3,
+    "migration_interval": 2,
+    "migrants_per_island": 1,
+    "checkpoint_interval": 1
+  },
+  "explorer": {"enabled": false},
+  "conjecture": {
+    "enabled": true,
+    "interval": 1,
+    "observations_per_interval": 8,
+    "conjectures_per_interval": 2,
+    "context_candidates": 8,
+    "context_conjectures": 8,
+    "counterexample_trials": 2,
+    "min_evidence": 2,
+    "timeout_seconds": 10
+  },
+  "metadata": {
+    "purpose": "v0.7 frozen Lake project, premise retrieval, and leanchecker --fresh smoke test",
+    "proof_assumptions": [
+      "For every evaluated numeric candidate x, distance_to_42 is defined as abs(x - 42)."
+    ],
+    "formal_contracts": [
+      {
+        "conjecture_statement": "Distance to 42 is always non-negative for evaluated candidates.",
+        "conjecture_predicate": {
+          "left": {"source": "metrics", "key": "distance_to_42"},
+          "operator": "ge",
+          "right_constant": 0
+        },
+        "backend": "lean4",
+        "toolchain": "leanprover/lean4:v4.30.0",
+        "theorem_name": "distance_to_42_nonnegative",
+        "theorem_signature": "theorem distance_to_42_nonnegative (d : Nat) : 0 ≤ d",
+        "imports": ["FormalProject42.Premises"],
+        "preamble": "",
+        "metadata": {
+          "project_fingerprint": "f12cf6931e649695617d0c7796033d579d1958779c6074bfeb268ec8e53fb181",
+          "premise_index_fingerprint": "4613f918c84d9f4461a62b5edd38ff1ea7bffc832c82174aaeb28d1e72086453",
+          "semantic_mapping": "The executable predicate metrics.distance_to_42 >= 0 is represented as non-negativity of a natural-number distance d; the frozen project theorem FormalProject42.distance_nonnegative proves the same codomain invariant."
+        }
+      }
+    ]
+  }
+}
