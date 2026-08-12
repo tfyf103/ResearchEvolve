@@ -1,0 +1,6 @@
+name = "formal_project42"
+version = "0.1.0"
+defaultTargets = ["FormalProject42"]
+
+[[lean_lib]]
+name = "FormalProject42"
