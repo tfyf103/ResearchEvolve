@@ -15,10 +15,14 @@ from .explorer import CommandExplorer
 from .formal import FormalMemory
 from .formal_agents import CommandFormalizer, CommandFormalRepairer
 from .formal_pipeline import FormalPipeline
+from .formal_project import LeanProjectEnvironment, LeanProjectLock
+from .formal_retrieval import FormalRetrievalMemory, PremiseIndex, PremiseSelector
+from .formal_retrieval_pipeline import RetrievalFormalPipeline
 from .graph import ResearchGraph
 from .ideas import IdeaMemory
 from .lean_kernel import LeanKernel
 from .mutation import FourLevelMutator
+from .project_kernel import ProjectCheckMemory, ProjectLeanKernel
 from .proof_agents import CommandProofPlanner, CommandProofVerifier, CommandProver
 from .proof_pipeline import ProofPipeline
 from .proofs import ProofMemory
@@ -103,7 +107,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
     seeds = _read_json(args.seeds)
     if not isinstance(seeds, list) or not all(isinstance(item, dict) for item in seeds):
         raise SystemExit("seeds must be a JSON list of objects")
-
     pack = _load_pack(args.domain_pack)
     if pack is not None:
         seeds = [pack.prepare_seed(item) for item in seeds]
@@ -113,7 +116,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
         evaluator_paths = [str(path) for path in pack.evaluator_paths()]
     if not evaluator_paths:
         raise SystemExit("provide at least one --evaluator or use --domain-pack")
-
     explorer = None
     if args.explorer_command:
         if not spec.explorer.enabled:
@@ -121,7 +123,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
         explorer = CommandExplorer(args.explorer_command, timeout_seconds=spec.explorer.timeout_seconds)
     elif spec.explorer.enabled:
         raise SystemExit("ResearchSpec enables explorer proposals; provide --explorer-command")
-
     conjecturer = None
     if args.conjecturer_command:
         if not spec.conjecture.enabled:
@@ -129,21 +130,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         conjecturer = CommandConjecturer(args.conjecturer_command, timeout_seconds=spec.conjecture.timeout_seconds)
     elif spec.conjecture.enabled:
         raise SystemExit("ResearchSpec enables conjecture generation; provide --conjecturer-command")
-
-    with ResearchEngine(
-        spec,
-        workspace=args.workspace,
-        island_count=args.islands,
-        mutator=mutator,
-        explorer=explorer,
-        conjecturer=conjecturer,
-    ) as engine:
-        summary = engine.run(
-            seeds,
-            evaluator_paths,
-            resume=args.resume,
-            domain_pack=pack.name if pack is not None else None,
-        )
+    with ResearchEngine(spec, workspace=args.workspace, island_count=args.islands, mutator=mutator, explorer=explorer, conjecturer=conjecturer) as engine:
+        summary = engine.run(seeds, evaluator_paths, resume=args.resume, domain_pack=pack.name if pack is not None else None)
     print(json.dumps(summary.to_dict(), indent=2))
     return 0
 
@@ -153,16 +141,7 @@ def _cmd_prove(args: argparse.Namespace) -> int:
     prover = CommandProver(args.prover_command, timeout_seconds=args.timeout)
     verifier = CommandProofVerifier(args.verifier_command, timeout_seconds=args.timeout)
     try:
-        with ProofPipeline(
-            args.workspace,
-            planner,
-            prover,
-            verifier,
-            max_conjectures=args.max_conjectures,
-            max_lemmas=args.max_lemmas,
-            evidence_context=args.evidence_context,
-            min_verifier_confidence=args.min_verifier_confidence,
-        ) as pipeline:
+        with ProofPipeline(args.workspace, planner, prover, verifier, max_conjectures=args.max_conjectures, max_lemmas=args.max_lemmas, evidence_context=args.evidence_context, min_verifier_confidence=args.min_verifier_confidence) as pipeline:
             summary = pipeline.run()
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
@@ -170,28 +149,76 @@ def _cmd_prove(args: argparse.Namespace) -> int:
     return 0
 
 
+def _project_environment(args: argparse.Namespace) -> LeanProjectEnvironment | None:
+    if not args.project_root and not args.project_lock:
+        return None
+    if not args.project_root or not args.project_lock:
+        raise SystemExit("v0.7 project mode requires both --project-root and --project-lock")
+    try:
+        lock = LeanProjectLock.read(args.project_lock)
+        return LeanProjectEnvironment.create(args.project_root, lock, lake_command=args.lake_command, build_targets=args.project_build_target or [], copy_dependency_cache=not args.no_copy_dependency_cache)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
 def _cmd_formalize(args: argparse.Namespace) -> int:
     formalizer = CommandFormalizer(args.formalizer_command, timeout_seconds=args.actor_timeout)
-    repairer = (
-        CommandFormalRepairer(args.repairer_command, timeout_seconds=args.actor_timeout)
-        if args.repairer_command
-        else None
-    )
-    kernel = LeanKernel(args.lean_command, timeout_seconds=args.kernel_timeout)
+    repairer = CommandFormalRepairer(args.repairer_command, timeout_seconds=args.actor_timeout) if args.repairer_command else None
+    project = _project_environment(args)
+    kernel = ProjectLeanKernel(project, timeout_seconds=args.kernel_timeout) if project is not None else LeanKernel(args.lean_command, timeout_seconds=args.kernel_timeout)
+    selector = None
+    if args.premise_index:
+        if project is None:
+            raise SystemExit("--premise-index requires v0.7 project mode")
+        try:
+            index = PremiseIndex.read(args.premise_index)
+            if index.project_fingerprint != project.fingerprint:
+                raise ValueError(f"premise index project fingerprint does not match configured project lock: index={index.project_fingerprint}, project={project.fingerprint}")
+            selector = PremiseSelector(index, limit=args.premise_limit)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+    pipeline_cls = RetrievalFormalPipeline if selector is not None else FormalPipeline
+    kwargs: dict[str, Any] = {"max_targets": args.max_targets, "max_repairs": args.max_repairs, "evidence_context": args.evidence_context}
+    if selector is not None:
+        kwargs["premise_selector"] = selector
     try:
-        with FormalPipeline(
-            args.workspace,
-            formalizer,
-            kernel,
-            repairer,
-            max_targets=args.max_targets,
-            max_repairs=args.max_repairs,
-            evidence_context=args.evidence_context,
-        ) as pipeline:
+        with pipeline_cls(args.workspace, formalizer, kernel, repairer, **kwargs) as pipeline:
             summary = pipeline.run()
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     print(json.dumps(summary.to_dict(), indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_project_lock(args: argparse.Namespace) -> int:
+    try:
+        lock = LeanProjectLock.capture(args.project_root, source_roots=args.source_root or ["."], extra_paths=args.extra_path or [], allow_unlocked_dependencies=args.allow_unlocked_dependencies)
+        lock.write(args.output)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps({"output": args.output, "fingerprint": lock.fingerprint, "toolchain": lock.toolchain}, indent=2))
+    return 0
+
+
+def _cmd_premise_index(args: argparse.Namespace) -> int:
+    try:
+        lock = LeanProjectLock.read(args.project_lock)
+        index = PremiseIndex.build_from_project(args.project_root, lock)
+        index.write(args.output)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps({"output": args.output, "fingerprint": index.fingerprint, "project_fingerprint": index.project_fingerprint, "premises": len(index.premises)}, indent=2))
+    return 0
+
+
+def _cmd_premise_search(args: argparse.Namespace) -> int:
+    try:
+        index = PremiseIndex.read(args.premise_index)
+        selector = PremiseSelector(index, limit=args.limit)
+        selection = selector.select(formal_spec_id="cli-preview", query=args.query, allowed_modules=args.module or None)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps(selection.to_dict(), indent=2, ensure_ascii=False))
     return 0
 
 
@@ -287,15 +314,33 @@ def _cmd_formal_memory(args: argparse.Namespace) -> int:
     return 0
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="research-evolve", description="ResearchEvolve v0.6 research harness")
-    sub = parser.add_subparsers(dest="command", required=True)
+def _cmd_retrieval_memory(args: argparse.Namespace) -> int:
+    memory = FormalRetrievalMemory(Path(args.workspace) / "formal_retrieval.sqlite3")
+    try:
+        data = memory.list(args.limit)
+    finally:
+        memory.close()
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+    return 0
 
+
+def _cmd_project_checks(args: argparse.Namespace) -> int:
+    memory = ProjectCheckMemory(Path(args.workspace) / "formal_project.sqlite3")
+    try:
+        data = memory.list(args.limit)
+    finally:
+        memory.close()
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="research-evolve", description="ResearchEvolve v0.7 research harness")
+    sub = parser.add_subparsers(dest="command", required=True)
     init = sub.add_parser("init", help="write a ResearchSpec JSON template")
     init.add_argument("output", nargs="?", default="research.json")
     init.add_argument("--force", action="store_true")
     init.set_defaults(func=_cmd_init)
-
     run = sub.add_parser("run", help="run evolutionary mathematical search")
     run.add_argument("--spec", required=True)
     run.add_argument("--evaluator", action="append", help="evaluator stage path; repeat to form a cheap-to-expensive cascade")
@@ -308,7 +353,6 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--conjecturer-command", help="external Conjecturer command using the v0.4 JSON stdin/stdout protocol")
     run.add_argument("--resume", action="store_true", help="resume from the workspace generation checkpoint")
     run.set_defaults(func=_cmd_run)
-
     prove = sub.add_parser("prove", help="run the v0.5 proof planner/prover/independent-verifier pipeline")
     prove.add_argument("--workspace", default=".researchevolve/run")
     prove.add_argument("--planner-command", required=True)
@@ -320,91 +364,101 @@ def build_parser() -> argparse.ArgumentParser:
     prove.add_argument("--evidence-context", type=int, default=24)
     prove.add_argument("--min-verifier-confidence", type=float, default=0.7)
     prove.set_defaults(func=_cmd_prove)
-
-    formalize = sub.add_parser("formalize", help="run the v0.6 Lean formalization/kernel/repair pipeline")
+    formalize = sub.add_parser("formalize", help="run v0.6 single-file or v0.7 project/fresh-replay Lean verification")
     formalize.add_argument("--workspace", default=".researchevolve/run")
     formalize.add_argument("--formalizer-command", required=True)
     formalize.add_argument("--repairer-command")
-    formalize.add_argument("--lean-command", default="lean")
+    formalize.add_argument("--lean-command", default="lean", help="v0.6 standalone Lean command")
+    formalize.add_argument("--project-root", help="v0.7 frozen Lake project root")
+    formalize.add_argument("--project-lock", help="v0.7 Lean project lock JSON")
+    formalize.add_argument("--lake-command", default="lake")
+    formalize.add_argument("--project-build-target", action="append", help="Lake build target; repeat as needed")
+    formalize.add_argument("--no-copy-dependency-cache", action="store_true", help="refuse copying .lake/packages into the isolated project")
+    formalize.add_argument("--premise-index", help="v0.7 content-addressed premise index")
+    formalize.add_argument("--premise-limit", type=int, default=12)
     formalize.add_argument("--actor-timeout", type=float, default=60.0)
-    formalize.add_argument("--kernel-timeout", type=float, default=30.0)
+    formalize.add_argument("--kernel-timeout", type=float, default=60.0)
     formalize.add_argument("--max-targets", type=int, default=4)
     formalize.add_argument("--max-repairs", type=int, default=2)
     formalize.add_argument("--evidence-context", type=int, default=24)
     formalize.set_defaults(func=_cmd_formalize)
-
+    project_lock = sub.add_parser("lean-project-lock", help="freeze a Lean/Lake project into a content-addressed v0.7 lock")
+    project_lock.add_argument("--project-root", required=True)
+    project_lock.add_argument("--source-root", action="append", help="relative source root to hash; repeat as needed")
+    project_lock.add_argument("--extra-path", action="append", help="additional relative project file to hash")
+    project_lock.add_argument("--allow-unlocked-dependencies", action="store_true")
+    project_lock.add_argument("--output", required=True)
+    project_lock.set_defaults(func=_cmd_project_lock)
+    premise_index = sub.add_parser("premise-index", help="index theorem/lemma/def declarations from a frozen Lean project")
+    premise_index.add_argument("--project-root", required=True)
+    premise_index.add_argument("--project-lock", required=True)
+    premise_index.add_argument("--output", required=True)
+    premise_index.set_defaults(func=_cmd_premise_index)
+    premise_search = sub.add_parser("premise-search", help="preview deterministic v0.7 premise retrieval")
+    premise_search.add_argument("--premise-index", required=True)
+    premise_search.add_argument("--query", required=True)
+    premise_search.add_argument("--module", action="append", help="restrict to a frozen import module")
+    premise_search.add_argument("--limit", type=int, default=12)
+    premise_search.set_defaults(func=_cmd_premise_search)
     inspect = sub.add_parser("inspect", help="show highest canonical-score valid candidates")
     inspect.add_argument("--workspace", default=".researchevolve/run")
     inspect.add_argument("--limit", type=int, default=10)
     inspect.set_defaults(func=_cmd_inspect)
-
     graph = sub.add_parser("graph", help="export the persistent Research Graph")
     graph.add_argument("--workspace", default=".researchevolve/run")
     graph.add_argument("--output")
     graph.set_defaults(func=_cmd_graph)
-
     pareto = sub.add_parser("pareto", help="show the latest multi-objective Pareto frontier")
     pareto.add_argument("--workspace", default=".researchevolve/run")
     pareto.add_argument("--limit", type=int)
     pareto.set_defaults(func=_cmd_json_artifact, artifact="pareto.json")
-
     manifest = sub.add_parser("manifest", help="show the reproducibility manifest for a run")
     manifest.add_argument("--workspace", default=".researchevolve/run")
     manifest.set_defaults(func=_cmd_json_artifact, artifact="manifest.json", limit=None)
-
     proof_manifest = sub.add_parser("proof-manifest", help="show the v0.5 proof pipeline manifest")
     proof_manifest.add_argument("--workspace", default=".researchevolve/run")
     proof_manifest.set_defaults(func=_cmd_json_artifact, artifact="proof_manifest.json", limit=None)
-
-    formal_manifest = sub.add_parser("formal-manifest", help="show the v0.6 formal verification manifest")
+    formal_manifest = sub.add_parser("formal-manifest", help="show the formal verification manifest")
     formal_manifest.add_argument("--workspace", default=".researchevolve/run")
     formal_manifest.set_defaults(func=_cmd_json_artifact, artifact="formal_manifest.json", limit=None)
-
     ideas = sub.add_parser("ideas", help="show recent structured Idea Genomes")
     ideas.add_argument("--workspace", default=".researchevolve/run")
     ideas.add_argument("--limit", type=int, default=20)
     ideas.set_defaults(func=_cmd_idea_memory, memory_kind="ideas")
-
     proposals = sub.add_parser("proposals", help="show Explorer proposals and evaluator outcomes")
     proposals.add_argument("--workspace", default=".researchevolve/run")
     proposals.add_argument("--limit", type=int, default=20)
     proposals.set_defaults(func=_cmd_idea_memory, memory_kind="proposals")
-
     observations = sub.add_parser("observations", help="show deterministic empirical observations")
     observations.add_argument("--workspace", default=".researchevolve/run")
     observations.add_argument("--limit", type=int, default=20)
     observations.set_defaults(func=_cmd_conjecture_memory, memory_kind="observations")
-
     conjectures = sub.add_parser("conjectures", help="show conjectures and empirical support/refutation status")
     conjectures.add_argument("--workspace", default=".researchevolve/run")
     conjectures.add_argument("--limit", type=int, default=20)
     conjectures.set_defaults(func=_cmd_conjecture_memory, memory_kind="conjectures")
-
     counterexamples = sub.add_parser("counterexamples", help="show verified empirical counterexamples")
     counterexamples.add_argument("--workspace", default=".researchevolve/run")
     counterexamples.add_argument("--limit", type=int, default=20)
     counterexamples.set_defaults(func=_cmd_conjecture_memory, memory_kind="counterexamples")
-
-    for command, help_text, memory_kind in [
-        ("proof-specs", "show frozen proof target specifications", "specs"),
-        ("proof-plans", "show lemma decomposition plans", "plans"),
-        ("proof-artifacts", "show natural-language proof artifacts", "artifacts"),
-        ("proof-reviews", "show independent adversarial proof reviews", "reviews"),
-    ]:
+    for command, help_text, memory_kind in [("proof-specs", "show frozen proof target specifications", "specs"), ("proof-plans", "show lemma decomposition plans", "plans"), ("proof-artifacts", "show natural-language proof artifacts", "artifacts"), ("proof-reviews", "show independent adversarial proof reviews", "reviews")]:
         proof_memory = sub.add_parser(command, help=help_text)
         proof_memory.add_argument("--workspace", default=".researchevolve/run")
         proof_memory.add_argument("--limit", type=int, default=20)
         proof_memory.set_defaults(func=_cmd_proof_memory, memory_kind=memory_kind)
-
-    for command, help_text, memory_kind in [
-        ("formal-specs", "show frozen Lean formalization specifications", "specs"),
-        ("formal-artifacts", "show generated/repaired Lean proof sources", "artifacts"),
-        ("kernel-runs", "show Lean compiler/kernel results", "kernel_runs"),
-    ]:
+    for command, help_text, memory_kind in [("formal-specs", "show frozen Lean formalization specifications", "specs"), ("formal-artifacts", "show generated/repaired Lean proof sources", "artifacts"), ("kernel-runs", "show Lean compiler/kernel results", "kernel_runs")]:
         formal_memory = sub.add_parser(command, help=help_text)
         formal_memory.add_argument("--workspace", default=".researchevolve/run")
         formal_memory.add_argument("--limit", type=int, default=20)
         formal_memory.set_defaults(func=_cmd_formal_memory, memory_kind=memory_kind)
+    premise_selections = sub.add_parser("premise-selections", help="show v0.7 premise retrieval decisions")
+    premise_selections.add_argument("--workspace", default=".researchevolve/run")
+    premise_selections.add_argument("--limit", type=int, default=20)
+    premise_selections.set_defaults(func=_cmd_retrieval_memory)
+    project_checks = sub.add_parser("project-checks", help="show v0.7 Lake build / Lean / leanchecker --fresh audit records")
+    project_checks.add_argument("--workspace", default=".researchevolve/run")
+    project_checks.add_argument("--limit", type=int, default=20)
+    project_checks.set_defaults(func=_cmd_project_checks)
     return parser
 
 
