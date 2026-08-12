@@ -1,0 +1,4 @@
+interface:
+  display_name: "Research Discovery"
+  short_description: "Run reproducible candidate and conjecture discovery"
+  default_prompt: "Run or resume ResearchEvolve discovery within declared budgets, inspect evidence and counterexamples, and report only gate-backed statuses."

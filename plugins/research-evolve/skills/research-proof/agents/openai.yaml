@@ -1,0 +1,4 @@
+interface:
+  display_name: "Research Proof"
+  short_description: "Plan, write, and independently review proofs"
+  default_prompt: "Develop a gate-backed natural-language proof with separated planner, prover, and reviewer roles, preserving all evidence and review records."
