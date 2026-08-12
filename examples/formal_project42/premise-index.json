@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "project_fingerprint": "8dc6a835a565d97f2ffdd1fa56bd984129de3a12ec906a6f0f456ee3c39005f8",
+  "project_fingerprint": "490c8802bd32ae64dacefd0b4bd01618fb9b677680e2115a570183faf09d2987",
   "premises": [
     {
       "name": "FormalProject42.distance_nonnegative",
@@ -21,5 +21,5 @@
       "tags": []
     }
   ],
-  "fingerprint": "82d6bd86975aae7471425b7c57c77fb9ac91e4b9942e917476b80f803fef061c"
+  "fingerprint": "1bfd52fd2c0f8fe0deecd227461faba0c3d301a86043e6119a474656378fe4d2"
 }
