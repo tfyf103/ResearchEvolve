@@ -10,14 +10,14 @@
   "extra_paths": [],
   "files": [
     {
-      "path": "FormalProject42/Premises.lean",
-      "sha256": "8daa0a850cbf9a5383ca9f342b3266f3509c4fc949d3f5ad0255ff907d5f1322"
-    },
-    {
       "path": "FormalProject42.lean",
       "sha256": "b410934b1c923a5daaa2a68645d2d9a1731eff70216346ee377f5070435cdb68"
+    },
+    {
+      "path": "FormalProject42/Premises.lean",
+      "sha256": "8daa0a850cbf9a5383ca9f342b3266f3509c4fc949d3f5ad0255ff907d5f1322"
     }
   ],
   "dependencies": [],
-  "fingerprint": "f12cf6931e649695617d0c7796033d579d1958779c6074bfeb268ec8e53fb181"
+  "fingerprint": "8dc6a835a565d97f2ffdd1fa56bd984129de3a12ec906a6f0f456ee3c39005f8"
 }
