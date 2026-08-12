@@ -5,6 +5,18 @@ from .formal import FormalArtifact, FormalizationSpec, KernelResult, LeanDiagnos
 from .formal_project import LeanProjectEnvironment, LeanProjectLock, LockedProjectFile
 from .formal_retrieval import Premise, PremiseIndex, PremiseSelection, PremiseSelector, ProofSearchBudget, ScoredPremise
 from .formal_retrieval_pipeline import RetrievalFormalPipeline
+from .formal_search import (
+    CommandTacticGenerator,
+    FrozenLeanProofWorker,
+    InteractiveProofSearchBudget,
+    LeanGoal,
+    LeanProofState,
+    ProofSearchExhausted,
+    ProofSearchFormalizer,
+    ProofSearchSummary,
+    TacticCandidate,
+    TacticTransition,
+)
 from .ideas import IdeaGenome, ResearchProposal, SemanticPatch
 from .project_kernel import ProjectCheckResult, ProjectLeanKernel
 from .proofs import (
@@ -63,5 +75,16 @@ __all__ = [
     "RetrievalFormalPipeline",
     "ProjectCheckResult",
     "ProjectLeanKernel",
+    "LeanGoal",
+    "LeanProofState",
+    "TacticCandidate",
+    "TacticTransition",
+    "InteractiveProofSearchBudget",
+    "ProofSearchSummary",
+    "ProofSearchExhausted",
+    "CommandTacticGenerator",
+    "FrozenLeanProofWorker",
+    "ProofSearchFormalizer",
 ]
-__version__ = "0.8.0"
+__version__ = "0.9.0"
+

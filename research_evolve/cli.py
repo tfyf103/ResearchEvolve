@@ -18,6 +18,12 @@ from .formal_pipeline import FormalPipeline
 from .formal_project import LeanProjectEnvironment, LeanProjectLock
 from .formal_retrieval import FormalRetrievalMemory, PremiseIndex, PremiseSelector, ProofSearchBudget
 from .formal_retrieval_pipeline import RetrievalFormalPipeline
+from .formal_search import (
+    CommandTacticGenerator,
+    FrozenLeanProofWorker,
+    InteractiveProofSearchBudget,
+    ProofSearchFormalizer,
+)
 from .graph import ResearchGraph
 from .ideas import IdeaMemory
 from .lean_kernel import LeanKernel
@@ -162,8 +168,6 @@ def _project_environment(args: argparse.Namespace) -> LeanProjectEnvironment | N
 
 
 def _cmd_formalize(args: argparse.Namespace) -> int:
-    formalizer = CommandFormalizer(args.formalizer_command, timeout_seconds=args.actor_timeout)
-    repairer = CommandFormalRepairer(args.repairer_command, timeout_seconds=args.actor_timeout) if args.repairer_command else None
     project = _project_environment(args)
     kernel = ProjectLeanKernel(project, timeout_seconds=args.kernel_timeout) if project is not None else LeanKernel(args.lean_command, timeout_seconds=args.kernel_timeout)
     selector = None
@@ -183,9 +187,37 @@ def _cmd_formalize(args: argparse.Namespace) -> int:
             selector = PremiseSelector(index, limit=args.premise_limit, budget=budget)
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
-    pipeline_cls = RetrievalFormalPipeline if selector is not None else FormalPipeline
+    if bool(args.formalizer_command) == bool(args.tactic_generator_command):
+        raise SystemExit("choose exactly one of --formalizer-command or --tactic-generator-command")
+    if args.tactic_generator_command:
+        if project is None or selector is None:
+            raise SystemExit("v0.9 interactive proof search requires frozen project mode and --premise-index")
+        if args.repairer_command:
+            raise SystemExit("--repairer-command cannot be combined with v0.9 interactive proof search")
+        generator = CommandTacticGenerator(args.tactic_generator_command, timeout_seconds=args.actor_timeout)
+        worker = FrozenLeanProofWorker(project, timeout_seconds=args.interaction_timeout)
+        search_budget = InteractiveProofSearchBudget(
+            max_states=args.search_max_states,
+            max_depth=args.search_max_depth,
+            max_tactics_per_state=args.search_tactics_per_state,
+            max_lean_calls=args.search_max_lean_calls,
+            max_model_calls=args.search_max_model_calls,
+            max_retrieval_calls=args.search_max_retrieval_calls,
+            max_wall_seconds=args.search_wall_seconds,
+            beam_width=args.search_beam_width,
+        )
+        formalizer = ProofSearchFormalizer(
+            args.workspace, worker, generator, premise_selector=selector,
+            budget=search_budget, resume=args.search_resume,
+        )
+        repairer = None
+        pipeline_cls = FormalPipeline
+    else:
+        formalizer = CommandFormalizer(args.formalizer_command, timeout_seconds=args.actor_timeout)
+        repairer = CommandFormalRepairer(args.repairer_command, timeout_seconds=args.actor_timeout) if args.repairer_command else None
+        pipeline_cls = RetrievalFormalPipeline if selector is not None else FormalPipeline
     kwargs: dict[str, Any] = {"max_targets": args.max_targets, "max_repairs": args.max_repairs, "evidence_context": args.evidence_context}
-    if selector is not None:
+    if selector is not None and pipeline_cls is RetrievalFormalPipeline:
         kwargs["premise_selector"] = selector
     try:
         with pipeline_cls(args.workspace, formalizer, kernel, repairer, **kwargs) as pipeline:
@@ -379,9 +411,10 @@ def build_parser() -> argparse.ArgumentParser:
     prove.add_argument("--evidence-context", type=int, default=24)
     prove.add_argument("--min-verifier-confidence", type=float, default=0.7)
     prove.set_defaults(func=_cmd_prove)
-    formalize = sub.add_parser("formalize", help="run standalone or frozen-project Lean verification with v0.8 retrieval")
+    formalize = sub.add_parser("formalize", help="run Lean certification or v0.9 interactive proof-state search")
     formalize.add_argument("--workspace", default=".researchevolve/run")
-    formalize.add_argument("--formalizer-command", required=True)
+    formalize.add_argument("--formalizer-command", help="v0.6-v0.8 whole-proof actor command")
+    formalize.add_argument("--tactic-generator-command", help="v0.9 proof-state-conditioned tactic actor command")
     formalize.add_argument("--repairer-command")
     formalize.add_argument("--lean-command", default="lean", help="v0.6 standalone Lean command")
     formalize.add_argument("--project-root", help="v0.7 frozen Lake project root")
@@ -396,6 +429,16 @@ def build_parser() -> argparse.ArgumentParser:
     formalize.add_argument("--premise-context-budget", type=int, default=24000)
     formalize.add_argument("--actor-timeout", type=float, default=60.0)
     formalize.add_argument("--kernel-timeout", type=float, default=60.0)
+    formalize.add_argument("--interaction-timeout", type=float, default=60.0)
+    formalize.add_argument("--search-max-states", type=int, default=500)
+    formalize.add_argument("--search-max-depth", type=int, default=24)
+    formalize.add_argument("--search-tactics-per-state", type=int, default=8)
+    formalize.add_argument("--search-max-lean-calls", type=int, default=2000)
+    formalize.add_argument("--search-max-model-calls", type=int, default=100)
+    formalize.add_argument("--search-max-retrieval-calls", type=int, default=500)
+    formalize.add_argument("--search-wall-seconds", type=float, default=900.0)
+    formalize.add_argument("--search-beam-width", type=int, default=64)
+    formalize.add_argument("--search-resume", action="store_true", help="resume the exact active v0.9 search journal")
     formalize.add_argument("--max-targets", type=int, default=4)
     formalize.add_argument("--max-repairs", type=int, default=2)
     formalize.add_argument("--evidence-context", type=int, default=24)
@@ -492,3 +535,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

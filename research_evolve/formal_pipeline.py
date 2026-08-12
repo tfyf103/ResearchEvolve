@@ -9,6 +9,7 @@ from .candidates import Candidate, CandidateDB
 from .conjectures import ConjectureMemory, Predicate
 from .formal import FormalArtifact, FormalMemory, FormalStatus, FormalizationSpec, KernelResult
 from .formal_agents import FormalContext, Formalizer, FormalRepairer
+from .formal_search import ProofSearchEnvironmentError, ProofSearchExhausted
 from .graph import ResearchGraph, ResearchNode
 from .lean_kernel import LeanKernel
 from .proofs import ProofMemory
@@ -21,6 +22,7 @@ class FormalRunSummary:
     attempted_formalizations: int
     already_formal_verified: int
     formal_verified: int
+    search_exhausted: int
     repair_exhausted: int
     environment_error: int
     invalid: int
@@ -433,6 +435,16 @@ class FormalPipeline:
             current.attempt = 0
             current.parent_artifact_id = None
             current.validate()
+        except ProofSearchExhausted as exc:
+            self.memory.set_spec_status(spec.id, "search_exhausted")
+            self._record_spec_graph(spec, "search_exhausted")
+            self._record_error("proof-search", spec, str(exc))
+            return "search_exhausted"
+        except ProofSearchEnvironmentError as exc:
+            self.memory.set_spec_status(spec.id, "environment_error")
+            self._record_spec_graph(spec, "environment_error")
+            self._record_error("proof-search-environment", spec, str(exc))
+            return "environment_error"
         except Exception as exc:
             self.memory.set_spec_status(spec.id, "invalid")
             self._record_spec_graph(spec, "invalid")
@@ -493,7 +505,7 @@ class FormalPipeline:
         invalidated_stale = self._invalidate_stale(proof_specs, conjectures)
         candidates = self._valid_candidates()
 
-        considered = attempted = already = verified = exhausted = env_error = invalid = missing = 0
+        considered = attempted = already = verified = search_exhausted = exhausted = env_error = invalid = missing = 0
         verified_specs = [item for item in proof_specs if item.get("status") == "verified_natural_language"]
         for proof_spec in verified_specs[: self.max_targets]:
             considered += 1
@@ -561,6 +573,8 @@ class FormalPipeline:
                 verified += 1
             elif status == "environment_error":
                 env_error += 1
+            elif status == "search_exhausted":
+                search_exhausted += 1
             elif status == "repair_exhausted":
                 exhausted += 1
             else:
@@ -571,6 +585,7 @@ class FormalPipeline:
             attempted_formalizations=attempted,
             already_formal_verified=already,
             formal_verified=verified,
+            search_exhausted=search_exhausted,
             repair_exhausted=exhausted,
             environment_error=env_error,
             invalid=invalid,
@@ -591,9 +606,13 @@ class FormalPipeline:
         self.proofs.close()
         self.graph.close()
         self.memory.close()
+        close_formalizer = getattr(self.formalizer, "close", None)
+        if callable(close_formalizer):
+            close_formalizer()
 
     def __enter__(self) -> "FormalPipeline":
         return self
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
         self.close()
+

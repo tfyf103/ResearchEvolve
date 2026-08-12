@@ -14,6 +14,7 @@ FormalStatus = Literal[
     "planned",
     "generated",
     "kernel_rejected",
+    "search_exhausted",
     "repair_exhausted",
     "formal_verified",
     "environment_error",
@@ -403,3 +404,4 @@ class FormalMemory:
 
     def close(self) -> None:
         self.conn.close()
+
