@@ -60,7 +60,7 @@ Do not let a model define the object it is supposed to prove facts about. For ex
 
 ### Generated top-level helpers disabled
 
-v0.6 rejects non-empty model-supplied `helper_source`. The model may use local `have` / `show` inside the theorem body, but cannot inject arbitrary global declarations before the target theorem.
+v0.6+ rejects non-empty model-supplied `helper_source`. The model may use local `have` / `show` inside the theorem body, but cannot inject arbitrary global declarations before the target theorem.
 
 This reduces attacks or accidental semantic changes through notation, namespaces, instances, syntax, macros, or name resolution.
 
@@ -142,22 +142,72 @@ exact frozen statement + machine predicate mapping
 
 `formal_verified` is therefore a statement about a **specific frozen Lean theorem**. It does not automatically prove that the informal research statement was translated correctly; the formal contract itself remains an auditable modeling assumption.
 
-## Adversarial Lean proof limitation
+## v0.7 Frozen Lean/Lake Project Boundary
 
-Lean tactics and elaboration are executable computation. An unreviewed AI-generated proof should be treated as potentially malicious code, not merely as text containing logical mistakes.
+v0.7 recognizes that freezing an import name is not enough. If `import MyProject.Definitions` resolves to different local source or dependency revisions, the same theorem signature can acquire different semantics.
 
-The v0.6 source gate narrows the obvious attack surface, but ordinary `lean` execution plus `#print axioms` is not the highest-assurance validation route against a determined adversary.
+### `LeanProjectLock`
 
-For higher-risk settings, later deployments should add layers such as:
+Project-mode verification therefore freezes a content-addressed project lock containing:
+
+- `lean-toolchain` contents;
+- `lakefile.toml` or `lakefile.lean` hash;
+- `lake-manifest.json` hash when present;
+- normalized resolved dependency package records from the Lake manifest;
+- hashes of tracked trusted `.lean` sources;
+- hashes of explicitly tracked extra project files;
+- source-root configuration.
+
+The resulting `project_fingerprint` is copied into the frozen formal contract metadata. `ProjectLeanKernel` requires an exact match before certification.
+
+If a tracked source, Lake configuration, toolchain, or locked dependency changes, project verification fails closed until the research contract is intentionally updated.
+
+Dependency-bearing projects are expected to have `lake-manifest.json`. `lean-project-lock --allow-unlocked-dependencies` exists only for explicit development use and should not be used for high-assurance or reproducible research runs.
+
+### Symlinks and project copying
+
+The lock refuses symlinked tracked files. Verification copies the exact frozen project into a temporary working directory instead of editing the trusted source project in place.
+
+For projects with resolved dependencies, v0.7 copies `.lake/packages` into the temporary project. If the frozen project declares dependency records but the dependency cache is missing, project verification fails rather than silently downloading a different dependency graph.
+
+This **does not make the temporary directory an OS security sandbox**. A hostile process running as the same user can still attempt filesystem, process, environment, or network access outside that directory. Use a container, VM, remote worker, or another OS-level sandbox for adversarial Formalizers.
+
+### Frozen premise retrieval
+
+`PremiseIndex` is bound to the exact `project_fingerprint`, and retrieval mode additionally requires the exact `premise_index_fingerprint` frozen in the formal contract.
+
+Premise selection is advisory only. Retrieved declarations cannot:
+
+- add imports;
+- change the theorem signature;
+- modify trusted definitions;
+- change the project lock;
+- grant `formal_verified`.
+
+The v0.7 built-in source scanner intentionally indexes only tracked local declarations and is a conservative retrieval layer, not a complete Lean elaborator. It may miss declarations or namespace details in complex source layouts. Missing retrieval lowers proof-generation quality; it must never weaken kernel verification.
+
+Retrieval is restricted to modules already listed in the frozen `FormalizationSpec.imports`. This is intentionally conservative: transitive imports may contain useful premises that are not surfaced by the default selector.
+
+### Lake build + Lean + fresh replay
+
+Project mode requires this chain:
 
 ```text
-isolated build sandbox
-→ lean4checker --fresh
-→ trusted challenge statement comparison
-→ comparator / independent external checker
+verify project fingerprint
+→ verify toolchain
+→ materialize frozen project
+→ lake build
+→ compile generated theorem inside Lake environment
+→ #print axioms audit
+→ lake env leanchecker --fresh ResearchEvolveGenerated
+→ formal_verified
 ```
 
-and should keep the trusted theorem statement outside the untrusted proof-generation environment.
+From Lean 4.28 onward, the former external `lean4checker` functionality is shipped with Lean as `leanchecker`. v0.7 therefore uses the toolchain-provided `leanchecker --fresh` rather than depending on the now-deprecated external checker repository.
+
+`--fresh` is a replay/environment-integrity check, not a second independently implemented proof assistant. It strengthens validation against environment contamination or cached declaration replacement, but does not eliminate the need for OS isolation when the proof generator itself is hostile.
+
+`formal_project.sqlite3` records the build, compile, and checker commands, exit codes, outputs, project fingerprint, and gate reason. These are audit records. The active certificate remains the `FormalizationSpec`/`KernelResult` lineage and can be invalidated when upstream research state becomes stale.
 
 ## Recommended production separation
 
@@ -179,10 +229,10 @@ Independent NL Verifier
 Formalizer / Repairer
         │   theorem body only
         ▼
-Isolated Lean Worker
-        │   kernel + axiom result
+Isolated Frozen Lake Project Worker
+        │   build + kernel + axiom audit
         ▼
-Optional external re-checker
+leanchecker --fresh replay
         │
         ▼
 Research state
@@ -196,7 +246,8 @@ For autonomous/untrusted Formalizers, isolate Lean in a container, VM, or remote
 - restricted filesystem access;
 - CPU, memory, process, and wall-time limits;
 - disabled or restricted network access;
-- pinned Lean and dependencies.
+- pinned Lean and dependencies;
+- immutable or content-addressed dependency caches where practical.
 
 The local subprocess boundary is not sufficient containment for hostile code.
 
@@ -216,7 +267,7 @@ Use environment variables or a secret manager for provider credentials. Research
 
 ## Stale-result invalidation
 
-A later counterexample can invalidate a previously accepted natural-language proof. v0.6 propagates this into formal records:
+A later counterexample can invalidate a previously accepted natural-language proof. v0.6+ propagates this into formal records:
 
 ```text
 FormalizationSpec → invalidated
@@ -224,7 +275,7 @@ FormalArtifact     → invalidated
 KernelResult       → invalidated
 ```
 
-Historical kernel information is retained for audit, but it no longer acts as the active formal certificate for the current research lineage.
+Historical kernel, project-check, and premise-selection information is retained for audit, but it no longer acts as the active formal certificate for the current research lineage.
 
 This is necessary because the Lean kernel may have correctly proved a frozen theorem while the upstream mapping between that theorem and the current research claim has become stale.
 
