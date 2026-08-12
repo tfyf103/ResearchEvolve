@@ -4,7 +4,9 @@
 
 ResearchEvolve 把 **演化搜索、LLM 研究提案、自动评测、经验猜想、反例攻击、自然语言证明、独立验证、Lean 形式化验证、冻结 Lean/Lake 工程、目标条件化 premise retrieval 与预算化证明搜索** 放进同一个可审计、可恢复、可复现的科研执行环境。
 
-当前版本：**v0.9.0**
+当前版本：**v1.0.0**
+
+v1.0 新增 **Certified Semantic Bridge**：可信语义注册表将 evaluator 字段绑定到数学类型与 Lean 环境，确定性编译器从机器 `Predicate` 生成 theorem signature，独立审计器用边界向量和真实候选做差分检查；通过后才能进入既有 Lean 搜索与 kernel gate。另有内容寻址的 Research Certificate，可在干净工作区重新执行 `leanchecker --fresh`。完整设计与命令见 [`docs/V1.0.md`](docs/V1.0.md)。
 
 ## 核心思想
 

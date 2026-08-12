@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .candidates import CandidateDB
+from .certificate import ResearchCertificate
 from .conjecturer import CommandConjecturer
 from .conjectures import ConjectureMemory
 from .domain import DomainPack, load_domain_pack
@@ -33,6 +34,7 @@ from .proof_agents import CommandProofPlanner, CommandProofVerifier, CommandProv
 from .proof_pipeline import ProofPipeline
 from .proofs import ProofMemory
 from .spec import ResearchSpec
+from .semantic_bridge import CertifiedSemanticBridge, SemanticAuditMemory, SemanticRegistry
 
 
 def _read_json(path: str | Path) -> Any:
@@ -187,6 +189,28 @@ def _cmd_formalize(args: argparse.Namespace) -> int:
             selector = PremiseSelector(index, limit=args.premise_limit, budget=budget)
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
+    semantic_bridge = None
+    if args.semantic_registry:
+        if project is None or selector is None:
+            raise SystemExit("v1.0 certified semantic bridge requires frozen project mode and --premise-index")
+        try:
+            registry = SemanticRegistry.read(args.semantic_registry)
+            if registry.project_fingerprint != project.fingerprint:
+                raise ValueError(
+                    "semantic registry project fingerprint does not match configured project lock: "
+                    f"registry={registry.project_fingerprint}, project={project.fingerprint}"
+                )
+            if registry.premise_index_fingerprint != selector.index.fingerprint:
+                raise ValueError(
+                    "semantic registry premise index fingerprint does not match configured index: "
+                    f"registry={registry.premise_index_fingerprint}, index={selector.index.fingerprint}"
+                )
+            semantic_bridge = CertifiedSemanticBridge(
+                registry,
+                SemanticAuditMemory(Path(args.workspace) / "semantic_contracts.sqlite3"),
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
     if bool(args.formalizer_command) == bool(args.tactic_generator_command):
         raise SystemExit("choose exactly one of --formalizer-command or --tactic-generator-command")
     if args.tactic_generator_command:
@@ -217,6 +241,8 @@ def _cmd_formalize(args: argparse.Namespace) -> int:
         repairer = CommandFormalRepairer(args.repairer_command, timeout_seconds=args.actor_timeout) if args.repairer_command else None
         pipeline_cls = RetrievalFormalPipeline if selector is not None else FormalPipeline
     kwargs: dict[str, Any] = {"max_targets": args.max_targets, "max_repairs": args.max_repairs, "evidence_context": args.evidence_context}
+    if semantic_bridge is not None:
+        kwargs["semantic_bridge"] = semantic_bridge
     if selector is not None and pipeline_cls is RetrievalFormalPipeline:
         kwargs["premise_selector"] = selector
     try:
@@ -381,8 +407,64 @@ def _cmd_project_checks(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_semantic_registry(args: argparse.Namespace) -> int:
+    try:
+        registry = SemanticRegistry.read(args.registry)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(
+        json.dumps(
+            {
+                "schema_version": registry.schema_version,
+                "fingerprint": registry.fingerprint,
+                "project_fingerprint": registry.project_fingerprint,
+                "premise_index_fingerprint": registry.premise_index_fingerprint,
+                "symbols": len(registry.symbols),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
+def _cmd_semantic_contracts(args: argparse.Namespace) -> int:
+    memory = SemanticAuditMemory(Path(args.workspace) / "semantic_contracts.sqlite3")
+    try:
+        data = memory.list(args.limit)
+    finally:
+        memory.close()
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_certificate_export(args: argparse.Namespace) -> int:
+    try:
+        manifest = ResearchCertificate.export(
+            args.workspace,
+            args.output,
+            semantic_registry=args.semantic_registry,
+            project_lock=args.project_lock,
+            premise_index=args.premise_index,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(json.dumps({"output": args.output, "fingerprint": manifest["fingerprint"]}, indent=2))
+    return 0
+
+
+def _cmd_certificate_verify(args: argparse.Namespace) -> int:
+    result = ResearchCertificate.verify(
+        args.certificate,
+        project_root=args.project_root,
+        lake_command=args.lake_command,
+        timeout_seconds=args.timeout,
+    )
+    print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+    return 0 if result.passed else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="research-evolve", description="ResearchEvolve v0.8 research harness")
+    parser = argparse.ArgumentParser(prog="research-evolve", description="ResearchEvolve v1.0 certified research harness")
     sub = parser.add_subparsers(dest="command", required=True)
     init = sub.add_parser("init", help="write a ResearchSpec JSON template")
     init.add_argument("output", nargs="?", default="research.json")
@@ -411,7 +493,7 @@ def build_parser() -> argparse.ArgumentParser:
     prove.add_argument("--evidence-context", type=int, default=24)
     prove.add_argument("--min-verifier-confidence", type=float, default=0.7)
     prove.set_defaults(func=_cmd_prove)
-    formalize = sub.add_parser("formalize", help="run Lean certification or v0.9 interactive proof-state search")
+    formalize = sub.add_parser("formalize", help="run Lean certification, v0.9 proof search, or the v1.0 semantic bridge")
     formalize.add_argument("--workspace", default=".researchevolve/run")
     formalize.add_argument("--formalizer-command", help="v0.6-v0.8 whole-proof actor command")
     formalize.add_argument("--tactic-generator-command", help="v0.9 proof-state-conditioned tactic actor command")
@@ -423,6 +505,7 @@ def build_parser() -> argparse.ArgumentParser:
     formalize.add_argument("--project-build-target", action="append", help="Lake build target; repeat as needed")
     formalize.add_argument("--no-copy-dependency-cache", action="store_true", help="refuse copying .lake/packages into the isolated project")
     formalize.add_argument("--premise-index", help="v0.8 content-addressed declaration database (schema 1 indexes remain readable)")
+    formalize.add_argument("--semantic-registry", help="v1.0 trusted field/type registry; generates audited contracts when no manual contract exists")
     formalize.add_argument("--premise-limit", type=int, default=12)
     formalize.add_argument("--premise-candidate-budget", type=int, default=5000)
     formalize.add_argument("--premise-dependency-budget", type=int, default=8)
@@ -524,6 +607,26 @@ def build_parser() -> argparse.ArgumentParser:
     project_checks.add_argument("--workspace", default=".researchevolve/run")
     project_checks.add_argument("--limit", type=int, default=20)
     project_checks.set_defaults(func=_cmd_project_checks)
+    semantic_registry = sub.add_parser("semantic-registry", help="validate and fingerprint a v1.0 trusted semantic registry")
+    semantic_registry.add_argument("--registry", required=True)
+    semantic_registry.set_defaults(func=_cmd_semantic_registry)
+    semantic_contracts = sub.add_parser("semantic-contracts", help="show generated v1.0 contracts and independent semantic audits")
+    semantic_contracts.add_argument("--workspace", default=".researchevolve/run")
+    semantic_contracts.add_argument("--limit", type=int, default=20)
+    semantic_contracts.set_defaults(func=_cmd_semantic_contracts)
+    certificate_export = sub.add_parser("certificate-export", help="export a portable content-addressed v1.0 research certificate")
+    certificate_export.add_argument("--workspace", default=".researchevolve/run")
+    certificate_export.add_argument("--semantic-registry", required=True)
+    certificate_export.add_argument("--project-lock", required=True)
+    certificate_export.add_argument("--premise-index", required=True)
+    certificate_export.add_argument("--output", required=True)
+    certificate_export.set_defaults(func=_cmd_certificate_export)
+    certificate_verify = sub.add_parser("certificate-verify", help="verify certificate hashes/lineage and optionally replay Lean fresh")
+    certificate_verify.add_argument("--certificate", required=True)
+    certificate_verify.add_argument("--project-root", help="frozen project root; when supplied, reruns ProjectLeanKernel + leanchecker --fresh")
+    certificate_verify.add_argument("--lake-command", default="lake")
+    certificate_verify.add_argument("--timeout", type=float, default=300.0)
+    certificate_verify.set_defaults(func=_cmd_certificate_verify)
     return parser
 
 
