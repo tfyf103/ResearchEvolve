@@ -50,7 +50,7 @@ class RetrievalFormalPipeline(FormalPipeline):
         manifest["fingerprint"] = stable_json_hash(stable)
         manifest["truth_policy"] = (
             "formal_verified is granted only by the configured Lean gate on the frozen statement+predicate contract. "
-            "v0.7 premise retrieval is advisory and content-addressed; it cannot change frozen imports, definitions, theorem signature, project fingerprint, or toolchain."
+            "v0.7 premise retrieval is advisory and content-addressed; it cannot change frozen imports, definitions, theorem signature, project/index fingerprints, or toolchain."
         )
         return manifest
 
@@ -128,10 +128,20 @@ class RetrievalFormalPipeline(FormalPipeline):
             candidates,
         )
         expected_project = str(formal_spec.metadata.get("project_fingerprint", "")).strip()
-        if expected_project and expected_project != self.premise_selector.index.project_fingerprint:
+        if not expected_project:
+            raise ValueError("retrieval mode requires project_fingerprint in the frozen formal contract")
+        if expected_project != self.premise_selector.index.project_fingerprint:
             raise ValueError(
                 "premise index belongs to a different Lean project: "
                 f"contract={expected_project}, index={self.premise_selector.index.project_fingerprint}"
+            )
+        expected_index = str(formal_spec.metadata.get("premise_index_fingerprint", "")).strip()
+        if not expected_index:
+            raise ValueError("retrieval mode requires premise_index_fingerprint in the frozen formal contract")
+        if expected_index != self.premise_selector.index.fingerprint:
+            raise ValueError(
+                "premise index does not match the frozen formal contract: "
+                f"contract={expected_index}, index={self.premise_selector.index.fingerprint}"
             )
         query = self._query(formal_spec, proof_spec, proof_artifact, conjecture)
         selection = self.premise_selector.select(
