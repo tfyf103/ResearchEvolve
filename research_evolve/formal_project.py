@@ -58,6 +58,29 @@ def _manifest_dependencies(manifest: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+def _manifest_packages_dir(manifest: Any) -> str:
+    if not isinstance(manifest, dict):
+        raise ValueError("lake-manifest.json must contain a JSON object")
+    raw = manifest.get("packagesDir", ".lake/packages")
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("lake-manifest.json packagesDir must be a non-empty relative path")
+    try:
+        relative = _normalize_rel(raw.strip())
+    except ValueError as exc:
+        raise ValueError(
+            "v0.7 certification requires lake-manifest.json packagesDir to stay inside the frozen project root"
+        ) from exc
+    if relative == ".":
+        raise ValueError("lake-manifest.json packagesDir must not be the project root")
+    return relative
+
+
+def _is_within(relative: str, directory: str) -> bool:
+    path_parts = Path(relative).parts
+    directory_parts = Path(directory).parts
+    return len(path_parts) >= len(directory_parts) and path_parts[: len(directory_parts)] == directory_parts
+
+
 @dataclass(slots=True, frozen=True)
 class LockedProjectFile:
     path: str
@@ -67,13 +90,18 @@ class LockedProjectFile:
         return {"path": self.path, "sha256": self.sha256}
 
 
-def _capture_dependency_cache(project_root: Path, dependencies: list[dict[str, Any]]) -> list[LockedProjectFile]:
+def _capture_dependency_cache(
+    project_root: Path,
+    dependencies: list[dict[str, Any]],
+    packages_dir: str,
+) -> list[LockedProjectFile]:
     if not dependencies:
         return []
-    packages = project_root / ".lake" / "packages"
+    packages = project_root / packages_dir
     if not packages.is_dir():
         raise ValueError(
-            "Lake manifest contains dependencies but .lake/packages is missing; run lake update/fetch before creating a reproducible project lock"
+            f"Lake manifest contains dependencies but {packages_dir} is missing; "
+            "run lake update/fetch before creating a reproducible project lock"
         )
     tracked: dict[str, LockedProjectFile] = {}
     for path in sorted(packages.rglob("*")):
@@ -89,7 +117,8 @@ def _capture_dependency_cache(project_root: Path, dependencies: list[dict[str, A
     files = [tracked[key] for key in sorted(tracked)]
     if not files:
         raise ValueError(
-            "Lake manifest contains dependencies but no lockable files were found under .lake/packages; v0.7 only supports cached package dependencies"
+            f"Lake manifest contains dependencies but no lockable files were found under {packages_dir}; "
+            "v0.7 only supports cached package dependencies"
         )
     return files
 
@@ -165,17 +194,20 @@ class LeanProjectLock:
         manifest_path = project_root / "lake-manifest.json"
         manifest: LockedProjectFile | None = None
         dependencies: list[dict[str, Any]] = []
+        packages_dir = ".lake/packages"
         if manifest_path.is_file():
             if manifest_path.is_symlink():
                 raise ValueError("project lock refuses symlinked lake-manifest.json")
+            manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest = LockedProjectFile("lake-manifest.json", sha256_file(manifest_path))
-            dependencies = _manifest_dependencies(json.loads(manifest_path.read_text(encoding="utf-8")))
+            dependencies = _manifest_dependencies(manifest_data)
+            packages_dir = _manifest_packages_dir(manifest_data)
         elif _dependency_declaration_present(lakefile_path) and not allow_unlocked_dependencies:
             raise ValueError(
                 "Lake project declares dependencies but has no lake-manifest.json; run lake update first or explicitly allow unlocked dependencies"
             )
 
-        dependency_cache_files = _capture_dependency_cache(project_root, dependencies)
+        dependency_cache_files = _capture_dependency_cache(project_root, dependencies, packages_dir)
         roots = [_normalize_rel(item) for item in (source_roots or ["."])]
         extras = [_normalize_rel(item) for item in (extra_paths or [])]
         tracked: dict[str, LockedProjectFile] = {}
@@ -185,6 +217,8 @@ class LeanProjectLock:
                 raise ValueError(f"project lock refuses symlinked source: {path}")
             relative = path.relative_to(project_root).as_posix()
             if any(part in _EXCLUDED_DIRS for part in Path(relative).parts):
+                return
+            if dependencies and _is_within(relative, packages_dir):
                 return
             tracked[relative] = LockedProjectFile(relative, sha256_file(path))
 
@@ -233,11 +267,12 @@ class LeanProjectLock:
     def _locked_files(raw: Any, label: str) -> list[LockedProjectFile]:
         if not isinstance(raw, list):
             raise ValueError(f"Lean project lock {label} must be a list")
-        return [
-            LockedProjectFile(str(item.get("path", "")), str(item.get("sha256", "")))
-            for item in raw
-            if isinstance(item, dict)
-        ]
+        files: list[LockedProjectFile] = []
+        for index, item in enumerate(raw):
+            if not isinstance(item, dict):
+                raise ValueError(f"Lean project lock {label} item #{index} must be an object")
+            files.append(LockedProjectFile(str(item.get("path", "")), str(item.get("sha256", ""))))
+        return files
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "LeanProjectLock":
@@ -346,7 +381,7 @@ class LeanProjectLock:
         # Certification is intentionally stricter than lock capture. A developer may
         # capture an unlocked dependency declaration for inspection, but any project
         # used by premise indexing or ProjectLeanKernel must resolve dependencies into
-        # lake-manifest.json + content-addressed .lake/packages sources.
+        # lake-manifest.json + content-addressed dependency sources.
         current = LeanProjectLock.capture(
             root,
             source_roots=self.source_roots,
@@ -406,6 +441,13 @@ class LeanProjectEnvironment:
             raise ValueError(f"Lean project root does not exist: {self.root}")
         self.lock.verify_project(self.root)
 
+    def _packages_dir(self) -> str:
+        if self.lock.manifest is None:
+            return ".lake/packages"
+        manifest_path = _assert_regular_file(self.root, self.lock.manifest.path)
+        manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        return _manifest_packages_dir(manifest_data)
+
     @contextmanager
     def materialize(self, workspace: str | Path) -> Iterator[Path]:
         self.validate()
@@ -432,10 +474,11 @@ class LeanProjectEnvironment:
                     raise ValueError(
                         "frozen project has dependencies but copy_dependency_cache=false; v0.7 refuses a network-dependent sandbox"
                     )
-                packages = self.root / ".lake" / "packages"
+                packages_dir = self._packages_dir()
+                packages = self.root / packages_dir
                 for item in self.lock.dependency_cache_files:
                     source = _assert_regular_file(packages, item.path)
-                    target = destination / ".lake" / "packages" / item.path
+                    target = destination / packages_dir / item.path
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(source, target)
 
