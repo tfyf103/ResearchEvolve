@@ -81,6 +81,7 @@ jobs:
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
           "$HOME/.elan/bin/elan" toolchain install leanprover/lean4:v4.30.0
           "$HOME/.elan/bin/lean" --version
+          "$HOME/.elan/bin/lake" --version
       - name: v0.6 Lean kernel and repair smoke test
         run: |
           research-evolve run \
@@ -118,4 +119,84 @@ jobs:
           assert summary['environment_error'] == 0, summary
           sources = list((workspace / 'formal_sources').glob('*.lean'))
           assert len(sources) >= 2, sources
+          PY
+      - name: v0.7 frozen Lake project retrieval and leanchecker fresh smoke test
+        run: |
+          mkdir -p .researchevolve/v07-generated
+          research-evolve lean-project-lock \
+            --project-root examples/formal_project42/lean_project \
+            --source-root . \
+            --output .researchevolve/v07-generated/project-lock.json
+          research-evolve premise-index \
+            --project-root examples/formal_project42/lean_project \
+            --project-lock examples/formal_project42/project-lock.json \
+            --output .researchevolve/v07-generated/premise-index.json
+          research-evolve premise-search \
+            --premise-index examples/formal_project42/premise-index.json \
+            --query "distance nonnegative Nat zero" \
+            --module FormalProject42.Premises \
+            --limit 4
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          generated_lock = json.loads(Path('.researchevolve/v07-generated/project-lock.json').read_text())
+          frozen_lock = json.loads(Path('examples/formal_project42/project-lock.json').read_text())
+          assert generated_lock['fingerprint'] == frozen_lock['fingerprint'], (generated_lock, frozen_lock)
+          generated_index = json.loads(Path('.researchevolve/v07-generated/premise-index.json').read_text())
+          frozen_index = json.loads(Path('examples/formal_project42/premise-index.json').read_text())
+          assert generated_index['fingerprint'] == frozen_index['fingerprint'], (generated_index, frozen_index)
+          spec = json.loads(Path('examples/formal_project42/spec.json').read_text())
+          metadata = spec['metadata']['formal_contracts'][0]['metadata']
+          assert metadata['project_fingerprint'] == frozen_lock['fingerprint']
+          assert metadata['premise_index_fingerprint'] == frozen_index['fingerprint']
+          PY
+          research-evolve run \
+            --spec examples/formal_project42/spec.json \
+            --evaluator examples/target42/evaluator.py \
+            --seeds examples/formal_project42/seeds.json \
+            --conjecturer-command "python examples/conjecture42/conjecturer.py" \
+            --workspace .researchevolve/ci-formal-project42 \
+            --islands 2
+          research-evolve prove \
+            --workspace .researchevolve/ci-formal-project42 \
+            --planner-command "python examples/proof42/planner.py" \
+            --prover-command "python examples/proof42/prover.py" \
+            --verifier-command "python examples/proof42/verifier.py" \
+            --max-conjectures 4 \
+            --max-lemmas 12 \
+            --min-verifier-confidence 0.7
+          research-evolve formalize \
+            --workspace .researchevolve/ci-formal-project42 \
+            --formalizer-command "python examples/formal_project42/formalizer.py" \
+            --repairer-command "python examples/formal_project42/repairer.py" \
+            --project-root examples/formal_project42/lean_project \
+            --project-lock examples/formal_project42/project-lock.json \
+            --project-build-target FormalProject42 \
+            --premise-index examples/formal_project42/premise-index.json \
+            --premise-limit 4 \
+            --max-targets 4 \
+            --max-repairs 2
+          research-evolve premise-selections --workspace .researchevolve/ci-formal-project42 --limit 3
+          research-evolve project-checks --workspace .researchevolve/ci-formal-project42 --limit 3
+          research-evolve formal-manifest --workspace .researchevolve/ci-formal-project42
+          python - <<'PY'
+          import json, sqlite3
+          from pathlib import Path
+          workspace = Path('.researchevolve/ci-formal-project42')
+          summary = json.loads((workspace / 'formal_summary.json').read_text())
+          assert summary['formal_verified'] == 1, summary
+          conn = sqlite3.connect(workspace / 'formal_project.sqlite3')
+          row = conn.execute('SELECT payload FROM project_checks ORDER BY created_at DESC LIMIT 1').fetchone()
+          conn.close()
+          check = json.loads(row[0])
+          assert check['passed'] is True, check
+          assert check['checker_command'][-2:] == ['--fresh', 'ResearchEvolveGenerated'], check
+          conn = sqlite3.connect(workspace / 'formal_retrieval.sqlite3')
+          row = conn.execute('SELECT payload FROM premise_selections ORDER BY created_at DESC LIMIT 1').fetchone()
+          conn.close()
+          selection = json.loads(row[0])
+          names = {item['name'] for item in selection['selected']}
+          assert 'FormalProject42.distance_nonnegative' in names, selection
+          manifest = json.loads((workspace / 'formal_manifest.json').read_text())
+          assert manifest['inputs']['premise_index_fingerprint'] == '4613f918c84d9f4461a62b5edd38ff1ea7bffc832c82174aaeb28d1e72086453'
           PY
