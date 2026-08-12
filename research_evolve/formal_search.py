@@ -335,6 +335,42 @@ class FrozenLeanProofWorker:
             if lines and lines[0].startswith("case "):
                 case_name = lines.pop(0)[5:].strip()
             goals.append(LeanGoal(target.strip(), tuple(lines), case_name))
+        if goals:
+            return goals
+
+        # Lean versions and message renderers do not always attach a file/info
+        # prefix to `trace_state`. Fall back to the actual turnstile lines while
+        # excluding diagnostic headers and sorry warnings.
+        raw_lines = output.splitlines()
+        for index, raw in enumerate(raw_lines):
+            if "⊢" not in raw:
+                continue
+            before_target, target = raw.split("⊢", 1)
+            context: list[str] = []
+            inline = before_target.strip()
+            if "info:" in inline:
+                inline = inline.split("info:", 1)[1].strip()
+            if inline:
+                context.append(inline)
+            cursor = index - 1
+            while cursor >= 0:
+                line = raw_lines[cursor].strip()
+                if not line or "⊢" in line or re.search(r"\b(?:warning|error):", line):
+                    break
+                if ".lean:" in line and "info:" not in line:
+                    break
+                if "info:" in line:
+                    line = line.split("info:", 1)[1].strip()
+                    if line:
+                        context.append(line)
+                    break
+                context.append(line)
+                cursor -= 1
+            context.reverse()
+            case_name = ""
+            if context and context[0].startswith("case "):
+                case_name = context.pop(0)[5:].strip()
+            goals.append(LeanGoal(target.strip(), tuple(context), case_name))
         return goals
 
     @classmethod
@@ -541,7 +577,8 @@ class ProofSearchFormalizer:
                         self._finish(summary, "environment_error", initial.diagnostics, 0)
                         raise ProofSearchEnvironmentError(summary)
                     if initial.status != "succeeded" or initial.state is None or initial.state.completed:
-                        self._finish(summary, "invalid", "worker did not return a non-closed initial proof state", 0)
+                        detail = initial.diagnostics[-4000:]
+                        self._finish(summary, "invalid", f"worker did not return a non-closed initial proof state: {detail}", 0)
                         raise RuntimeError(summary.reason)
                     summary.states_created = 1
                     self.memory.add_state(summary.run_id, initial.state, "frontier", 0.0, ordinal)

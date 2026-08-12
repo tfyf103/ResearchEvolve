@@ -170,3 +170,8 @@ def test_lean_trace_parser_preserves_multiple_goals_and_local_context() -> None:
         ("right", ("Q : Prop",), "Q"),
     ]
 
+
+def test_lean_trace_parser_accepts_unprefixed_trace_state_output() -> None:
+    output = "d : Nat\n⊢ 0 ≤ d\nSearchProbe.lean:4:2: warning: declaration uses 'sorry'\n"
+    assert FrozenLeanProofWorker._parse_goals(output) == [LeanGoal("0 ≤ d", ("d : Nat",))]
+
