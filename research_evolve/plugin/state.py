@@ -50,6 +50,16 @@ class PluginState:
             CREATE INDEX IF NOT EXISTS actor_tasks_replay ON actor_tasks(project_id, role, input_hash, status);
             CREATE UNIQUE INDEX IF NOT EXISTS actor_tasks_active_unique ON actor_tasks(project_id, role, input_hash)
                 WHERE status IN ('pending','submitted');
+            CREATE TABLE IF NOT EXISTS actor_runs (
+                id TEXT PRIMARY KEY, task_id TEXT NOT NULL, project_id TEXT NOT NULL, role TEXT NOT NULL,
+                session_id TEXT NOT NULL UNIQUE, backend TEXT NOT NULL, status TEXT NOT NULL,
+                policy_fingerprint TEXT NOT NULL, context_fingerprint TEXT NOT NULL,
+                prompt_fingerprint TEXT NOT NULL, command_fingerprint TEXT NOT NULL,
+                output_fingerprint TEXT, exit_code INTEGER, elapsed_seconds REAL,
+                diagnostics TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS actor_runs_project ON actor_runs(project_id, created_at);
+            CREATE INDEX IF NOT EXISTS actor_runs_task ON actor_runs(task_id, created_at);
             """
         )
         self.conn.commit()
@@ -238,3 +248,55 @@ class PluginState:
             raise ValueError("actor task update lost a concurrent revision race")
         self.conn.commit()
         return self.get_actor_task(task_id)
+
+    def create_actor_run(
+        self, *, task_id: str, project_id: str, role: str, session_id: str,
+        policy_fingerprint: str, context_fingerprint: str, prompt_fingerprint: str,
+        command_fingerprint: str,
+    ) -> dict[str, Any]:
+        run_id = f"actor-run-{uuid.uuid4().hex}"
+        now = utcnow()
+        self.conn.execute(
+            "INSERT INTO actor_runs VALUES (?, ?, ?, ?, ?, 'codex-native', 'running', ?, ?, ?, ?, NULL, NULL, NULL, '', ?, ?)",
+            (
+                run_id, task_id, project_id, role, session_id, policy_fingerprint,
+                context_fingerprint, prompt_fingerprint, command_fingerprint, now, now,
+            ),
+        )
+        self.conn.commit()
+        return self.get_actor_run(run_id)
+
+    def get_actor_run(self, run_id: str) -> dict[str, Any]:
+        row = self.conn.execute("SELECT * FROM actor_runs WHERE id=?", (run_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"unknown actor run: {run_id}")
+        return dict(row)
+
+    def finish_actor_run(
+        self, run_id: str, *, status: str, exit_code: int | None, elapsed_seconds: float,
+        output_fingerprint: str | None, diagnostics: str,
+    ) -> dict[str, Any]:
+        if status not in {"completed", "failed"}:
+            raise ValueError("actor run terminal status must be completed or failed")
+        cursor = self.conn.execute(
+            "UPDATE actor_runs SET status=?, output_fingerprint=?, exit_code=?, elapsed_seconds=?, diagnostics=?, updated_at=? WHERE id=? AND status='running'",
+            (status, output_fingerprint, exit_code, elapsed_seconds, diagnostics[-4000:], utcnow(), run_id),
+        )
+        if cursor.rowcount != 1:
+            self.conn.rollback()
+            raise ValueError("actor run is no longer active")
+        self.conn.commit()
+        return self.get_actor_run(run_id)
+
+    def list_actor_runs(self, project_id: str, limit: int) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT * FROM actor_runs WHERE project_id=? ORDER BY created_at DESC LIMIT ?",
+            (project_id, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def latest_actor_run(self, task_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM actor_runs WHERE task_id=? ORDER BY created_at DESC LIMIT 1", (task_id,)
+        ).fetchone()
+        return None if row is None else dict(row)

@@ -93,7 +93,7 @@ def test_actor_task_requires_explicit_response_contract(tmp_path: Path) -> None:
 def test_actor_bridge_round_trip(tmp_path: Path) -> None:
     with PluginService(tmp_path) as service:
         service.project_create(request_id="project", project_id="bridge-project", objective="test")
-    command = [sys.executable, "-m", "research_evolve.plugin.actor_bridge", "--root", str(tmp_path), "--project-id", "bridge-project", "--role", "explorer", "--timeout", "10"]
+    command = [sys.executable, "-m", "research_evolve.plugin.actor_bridge", "--root", str(tmp_path), "--project-id", "bridge-project", "--role", "explorer", "--backend", "manual", "--timeout", "10"]
     process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     assert process.stdin is not None
     process.stdin.write(json.dumps({"action": "propose", "response_contract": {"proposals": []}}))
@@ -141,16 +141,16 @@ def test_fixed_discovery_job_runs_without_arbitrary_command(tmp_path: Path) -> N
 
 
 def test_doctor_version_and_manifests(tmp_path: Path) -> None:
-    assert __version__ == "1.1.0"
+    assert __version__ == "1.2.0"
     with PluginService(tmp_path) as service:
         result = service.doctor()
         assert result["status"] == "pass"
-        assert next(item for item in result["checks"] if item["name"] == "research-evolve")["detail"] == "1.1.0"
+        assert next(item for item in result["checks"] if item["name"] == "research-evolve")["detail"] == "1.2.0"
     repo = Path(__file__).parents[1]
     plugin = json.loads((repo / "plugins/research-evolve/.codex-plugin/plugin.json").read_text(encoding="utf-8"))
     marketplace = json.loads((repo / ".agents/plugins/marketplace.json").read_text(encoding="utf-8"))
     mcp = json.loads((repo / "plugins/research-evolve/.mcp.json").read_text(encoding="utf-8"))
-    assert plugin["version"] == "1.1.0" and plugin["skills"] == "./skills/"
+    assert plugin["version"].startswith("1.2.0+codex.") and plugin["skills"] == "./skills/"
     assert marketplace["plugins"][0]["source"]["path"] == "./plugins/research-evolve"
     assert mcp["mcpServers"]["research-evolve"]["command"] == "research-evolve-mcp"
 

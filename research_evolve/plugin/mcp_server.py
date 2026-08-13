@@ -42,9 +42,9 @@ def create_server(root: str | Path) -> Any:
         return service.project_status(project_id=project_id)
 
     @mcp.tool()
-    def research_run_start(request_id: str, project_id: str, resume: bool = False, islands: int = 4) -> dict[str, Any]:
-        """Start bounded discovery as a background job without accepting arbitrary commands."""
-        return service.run_start(request_id=request_id, project_id=project_id, resume=resume, islands=islands)
+    def research_run_start(request_id: str, project_id: str, resume: bool = False, islands: int = 4, actor_backend: str = "codex-native") -> dict[str, Any]:
+        """Start bounded discovery with isolated Codex-native actors by default."""
+        return service.run_start(request_id=request_id, project_id=project_id, resume=resume, islands=islands, actor_backend=actor_backend)
 
     @mcp.tool()
     def research_run_status(job_id: str) -> dict[str, Any]:
@@ -57,14 +57,14 @@ def create_server(root: str | Path) -> Any:
         return service.run_cancel(request_id=request_id, job_id=job_id)
 
     @mcp.tool()
-    def research_proof_start(request_id: str, project_id: str, timeout_seconds: float = 300) -> dict[str, Any]:
-        """Start the planner/prover/independent-reviewer pipeline through audited actor tasks."""
-        return service.proof_start(request_id=request_id, project_id=project_id, timeout_seconds=timeout_seconds)
+    def research_proof_start(request_id: str, project_id: str, timeout_seconds: float = 300, actor_backend: str = "codex-native") -> dict[str, Any]:
+        """Start planner, prover, and reviewer in separate audited Codex sessions."""
+        return service.proof_start(request_id=request_id, project_id=project_id, timeout_seconds=timeout_seconds, actor_backend=actor_backend)
 
     @mcp.tool()
-    def research_formalize_start(request_id: str, project_id: str, mode: str, project_root: str, project_lock: str, premise_index: str, semantic_registry: str, build_targets: list[str] | None = None, timeout_seconds: float = 300) -> dict[str, Any]:
+    def research_formalize_start(request_id: str, project_id: str, mode: str, project_root: str, project_lock: str, premise_index: str, semantic_registry: str, build_targets: list[str] | None = None, timeout_seconds: float = 300, actor_backend: str = "codex-native") -> dict[str, Any]:
         """Start certified Lean formalization from project-relative frozen inputs."""
-        return service.formalize_start(request_id=request_id, project_id=project_id, mode=mode, project_root=project_root, project_lock=project_lock, premise_index=premise_index, semantic_registry=semantic_registry, build_targets=build_targets, timeout_seconds=timeout_seconds)
+        return service.formalize_start(request_id=request_id, project_id=project_id, mode=mode, project_root=project_root, project_lock=project_lock, premise_index=premise_index, semantic_registry=semantic_registry, build_targets=build_targets, timeout_seconds=timeout_seconds, actor_backend=actor_backend)
 
     @mcp.tool()
     def research_artifact_list(project_id: str, kind: str, limit: int = 20) -> dict[str, Any]:
@@ -85,6 +85,16 @@ def create_server(root: str | Path) -> Any:
     def research_actor_task_get(task_id: str) -> dict[str, Any]:
         """Read the immutable bounded context and response contract for an actor task."""
         return service.actor_task_get(task_id=task_id)
+
+    @mcp.tool()
+    def research_actor_policy(role: str) -> dict[str, Any]:
+        """Inspect the frozen context projection and process isolation policy for a role."""
+        return service.actor_policy_get(role=role)
+
+    @mcp.tool()
+    def research_actor_run_list(project_id: str, limit: int = 20) -> dict[str, Any]:
+        """List isolated Codex session fingerprints and terminal audit outcomes."""
+        return service.actor_run_list(project_id=project_id, limit=limit)
 
     @mcp.tool()
     def research_actor_output_submit(request_id: str, task_id: str, expected_revision: int, response: dict[str, Any]) -> dict[str, Any]:

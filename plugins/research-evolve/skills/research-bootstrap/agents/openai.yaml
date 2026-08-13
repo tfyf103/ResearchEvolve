@@ -1,4 +1,4 @@
 interface:
   display_name: "Research Bootstrap"
   short_description: "Create and validate auditable math projects"
-  default_prompt: "Create or validate a ResearchEvolve project from the user's mathematical objective, then report the frozen spec and next safe action."
+  default_prompt: "Use $research-bootstrap to create or validate an auditable ResearchEvolve project and check native Actor readiness."

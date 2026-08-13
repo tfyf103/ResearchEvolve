@@ -1,6 +1,6 @@
 # ResearchEvolve
 
-> Current release: v1.1 Codex Plugin MVP. See [docs/V1.1.md](docs/V1.1.md) for installation, tools, security boundaries, and scope.
+> Current release: v1.2 Isolated Codex-native Actors. See [docs/V1.2.md](docs/V1.2.md) for the actor boundary, audit records, fallback mode, and installation.
 
 > **A research harness for AI-driven mathematical discovery.**
 

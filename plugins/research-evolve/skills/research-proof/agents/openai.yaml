@@ -1,4 +1,4 @@
 interface:
   display_name: "Research Proof"
   short_description: "Plan, write, and independently review proofs"
-  default_prompt: "Develop a gate-backed natural-language proof with separated planner, prover, and reviewer roles, preserving all evidence and review records."
+  default_prompt: "Use $research-proof to run Planner, Prover, and Reviewer in separate audited Codex sessions and inspect the proof gate."

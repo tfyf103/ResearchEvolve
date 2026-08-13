@@ -1,6 +1,6 @@
 # ResearchEvolve Codex Plugin
 
-This local plugin exposes ResearchEvolve v1.1 through five workflow Skills and a workspace-confined stdio MCP server. The server never calls an LLM and never grants trusted research statuses; it validates inputs and delegates certification to the existing Core and Lean gates.
+This local plugin exposes ResearchEvolve v1.2 through five workflow Skills and a workspace-confined stdio MCP server. Discovery, proof, and formalization use isolated Codex-native actors by default. Every role runs in a fresh ephemeral `codex exec` process with projected context, structured output, read-only sandboxing, no approvals, and no inherited MCP/plugin/web/subagent tools. The server never grants trusted research statuses; certification remains in the existing Core and Lean gates.
 
 Install from the repository root:
 
@@ -11,4 +11,4 @@ research-evolve-plugin --root . doctor
 
 Then install this repository marketplace in Codex, or load `plugins/research-evolve` as a local plugin. The MCP server command is `research-evolve-mcp --root .`.
 
-The MVP deliberately has no UI. Discovery, proof, and formalization jobs use the existing Core pipelines; Codex actor inputs and outputs cross a schema-validated, journaled bridge.
+The plugin deliberately has no UI. `actor_backend=manual` retains the v1.1 journaled task exchange only as a disclosed diagnostic fallback. Use actor run audits to inspect isolation fingerprints and failures.
