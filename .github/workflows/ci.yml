@@ -22,20 +22,23 @@ jobs:
         run: python -m pip install -e ".[dev,plugin]"
       - name: Test
         run: pytest -q
-      - name: v1.1 Codex plugin validation and doctor
+      - name: v1.2 Codex plugin validation and isolated actor tests
         run: |
           python -m research_evolve.plugin.cli --root . doctor
           research-evolve-mcp --help
+          pytest -q tests/test_v12_native_actors.py
           python - <<'PY'
           import json
           from pathlib import Path
           plugin = json.loads(Path('plugins/research-evolve/.codex-plugin/plugin.json').read_text())
           marketplace = json.loads(Path('.agents/plugins/marketplace.json').read_text())
-          assert plugin['version'] == '1.1.0' and plugin['mcpServers'] == './.mcp.json'
+          assert plugin['version'].startswith('1.2.0+codex.') and plugin['mcpServers'] == './.mcp.json'
           assert marketplace['plugins'][0]['source']['path'] == './plugins/research-evolve'
           for skill in Path('plugins/research-evolve/skills').glob('*/SKILL.md'):
               text = skill.read_text()
               assert text.startswith('---\nname: ') and 'TODO' not in text
+              yaml = (skill.parent / 'agents' / 'openai.yaml').read_text()
+              assert f"${skill.parent.name}" in yaml
           PY
       - name: v0.2 CLI smoke test
         run: |

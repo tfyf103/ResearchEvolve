@@ -464,7 +464,7 @@ def _cmd_certificate_verify(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="research-evolve", description="ResearchEvolve v1.1 certified research harness with Codex plugin support")
+    parser = argparse.ArgumentParser(prog="research-evolve", description="ResearchEvolve v1.2 certified research harness with isolated Codex-native actors")
     sub = parser.add_subparsers(dest="command", required=True)
     init = sub.add_parser("init", help="write a ResearchSpec JSON template")
     init.add_argument("output", nargs="?", default="research.json")

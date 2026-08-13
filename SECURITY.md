@@ -28,6 +28,14 @@ verified_natural_language
 
 That is not Lean/Coq/Isabelle/kernel verification.
 
+## v1.2 Isolated Codex-native Actors
+
+The Codex plugin defaults to one fresh `codex exec --ephemeral --ignore-user-config` process per actor call; authentication still uses `CODEX_HOME`. Before launch, ResearchEvolve projects the request through a role allowlist, recursively removes credential-like fields, excludes proof-history context from Planner/Prover/Reviewer, and records policy/context/prompt fingerprints. The process runs in an empty session directory with read-only sandboxing, approvals disabled, and Shell, MCP, plugins, apps, web search, subagents, memories, and history persistence disabled through explicit Codex configuration overrides. A minimal environment allowlist omits common provider-key, token, and proxy variables.
+
+The final response must satisfy a role-specific JSON Schema and the existing Core parser. Native task output cannot be submitted through the public MCP exchange; it must match a completed actor-run audit and output fingerprint. Manual and native tasks have different content identities, so manual replay cannot masquerade as a native run.
+
+This boundary isolates model conversations, project context, tools, and ordinary environment secrets. It is still a local same-user process boundary, not a hostile multi-tenant VM. The deterministic evaluator, proof review, semantic audit, Lean kernel, axiom audit, and fresh replay remain the only authorities for trusted statuses.
+
 ## v0.6 Formalizer / Lean Gate
 
 A Formalizer or Repairer is untrusted and does not choose the theorem target.

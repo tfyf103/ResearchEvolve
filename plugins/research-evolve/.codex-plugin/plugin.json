@@ -1,6 +1,6 @@
 {
   "name": "research-evolve",
-  "version": "1.1.0",
+  "version": "1.2.0+codex.20260813021117",
   "description": "Auditable AI-assisted mathematical discovery and Lean verification",
   "author": {
     "name": "ResearchEvolve contributors"
@@ -9,10 +9,14 @@
   "interface": {
     "displayName": "ResearchEvolve",
     "shortDescription": "Auditable mathematical discovery and Lean verification.",
-    "longDescription": "Create, run, inspect, prove, formalize, diagnose, and certify ResearchEvolve projects through workspace-confined tools and explicit trust gates.",
+    "longDescription": "Create, run, inspect, prove, formalize, diagnose, and certify ResearchEvolve projects with isolated Codex-native actors, workspace-confined tools, and explicit trust gates.",
     "developerName": "ResearchEvolve contributors",
     "category": "Developer Tools",
-    "capabilities": ["Research project scaffolding", "Typed research operations", "Lean certificate verification"],
+    "capabilities": [
+      "Isolated Codex-native actors",
+      "Typed research operations",
+      "Lean certificate verification"
+    ],
     "defaultPrompt": "Help me run an auditable mathematical research project with ResearchEvolve."
   },
   "mcpServers": "./.mcp.json"

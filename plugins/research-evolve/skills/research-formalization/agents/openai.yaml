@@ -1,4 +1,4 @@
 interface:
   display_name: "Research Formalization"
   short_description: "Audit semantics and formalize conjectures with Lean"
-  default_prompt: "Validate the semantic registry and frozen Lean project, formalize an eligible conjecture, and explain kernel or semantic diagnostics."
+  default_prompt: "Use $research-formalization to run isolated Lean actors against frozen semantics and explain every deterministic gate result."

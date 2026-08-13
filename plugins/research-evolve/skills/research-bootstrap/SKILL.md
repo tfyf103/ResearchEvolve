@@ -9,7 +9,7 @@ Turn the user's objective into an explicit project without silently inventing th
 
 ## Workflow
 
-1. Run `research_doctor` before the first project operation.
+1. Run `research_doctor` before the first project operation. For the default actor path, require the `codex` check to pass; Lean/Lake remain phase-specific.
 2. Call `research_project_create` with a stable lowercase project id, a fresh request id, and the exact objective.
 3. Inspect the generated `research.json`, `seeds.json`, and `evaluator.py`.
 4. Ask for input only when evaluator semantics, admissible candidates, or optimization direction cannot be inferred safely.
@@ -20,4 +20,6 @@ Turn the user's objective into an explicit project without silently inventing th
 ## Trust Boundary
 
 Treat the generated files as a draft until validation passes. Never claim that scaffold creation proves, empirically supports, or formalizes anything. Never pass absolute paths or paths outside the plugin root.
+
+Codex-native actors run in fresh ephemeral processes. Do not copy secrets, provider configuration, evaluator source, or omitted project files into an actor request.
 

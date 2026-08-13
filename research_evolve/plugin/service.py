@@ -21,6 +21,7 @@ from ..proofs import ProofMemory
 from ..semantic_bridge import SemanticAuditMemory, SemanticRegistry
 from ..spec import ResearchSpec
 from .actors import ROLE_REQUIRED, validate_actor_response
+from .native_actors import actor_policy, project_actor_request
 from .state import PluginState, stable_hash
 
 
@@ -133,7 +134,7 @@ class PluginService:
                 "search": {"novelty_probability": 0.25, "novelty_k": 5, "migration_interval": 5, "migrants_per_island": 1, "checkpoint_interval": 1},
                 "explorer": {"enabled": False, "interval": 1, "proposals_per_interval": 2, "context_candidates": 8, "feedback_items": 12, "timeout_seconds": 60},
                 "conjecture": {"enabled": False, "interval": 1, "observations_per_interval": 12, "conjectures_per_interval": 2, "context_candidates": 24, "context_conjectures": 12, "counterexample_trials": 8, "min_evidence": 3, "timeout_seconds": 60},
-                "metadata": {"created_by": "research-evolve-codex-plugin-v1.1"},
+                "metadata": {"created_by": "research-evolve-codex-plugin-v1.2"},
             }
             seeds = [{"value": 0, "representation": "seed"}]
             evaluator = """from __future__ import annotations
@@ -202,19 +203,26 @@ if __name__ == "__main__":
                     summary[name] = {"error": "invalid JSON"}
         return {"project": record, "validation": self.project_validate(project_id=project_id), "workspace_exists": workspace.is_dir(), "summaries": summary}
 
-    def run_start(self, *, request_id: str, project_id: str, resume: bool = False, islands: int = 4) -> dict[str, Any]:
+    @staticmethod
+    def _actor_backend(value: str) -> str:
+        if value not in {"codex-native", "manual"}:
+            raise PluginError("actor_backend must be codex-native or manual")
+        return value
+
+    def run_start(self, *, request_id: str, project_id: str, resume: bool = False, islands: int = 4, actor_backend: str = "codex-native") -> dict[str, Any]:
         if not 1 <= islands <= 64:
             raise PluginError("islands must be between 1 and 64")
         _, path = self._project(project_id)
         validation = self.project_validate(project_id=project_id)
         if validation["errors"] or validation["warnings"]:
             raise PluginError("project is not runnable: " + "; ".join([*validation["errors"], *validation["warnings"]]))
-        payload = {"project_id": project_id, "resume": resume, "islands": islands}
+        actor_backend = self._actor_backend(actor_backend)
+        payload = {"project_id": project_id, "resume": resume, "islands": islands, "actor_backend": actor_backend}
 
         def start() -> dict[str, Any]:
             spec = ResearchSpec.from_dict(json.loads((path / "research.json").read_text(encoding="utf-8")))
             command = [sys.executable, "-m", "research_evolve.plugin.job_runner", "--phase", "discovery", "--project", str(path), "--islands", str(islands)]
-            bridge = lambda role, timeout: self._command_text([sys.executable, "-m", "research_evolve.plugin.actor_bridge", "--root", str(self.root), "--project-id", project_id, "--role", role, "--timeout", str(timeout)])
+            bridge = lambda role, timeout: self._command_text([sys.executable, "-m", "research_evolve.plugin.actor_bridge", "--root", str(self.root), "--project-id", project_id, "--role", role, "--timeout", str(timeout), "--backend", actor_backend])
             if spec.explorer.enabled:
                 command.extend(["--explorer-command", bridge("explorer", spec.explorer.timeout_seconds)])
             if spec.conjecture.enabled:
@@ -231,8 +239,9 @@ if __name__ == "__main__":
             return subprocess.list2cmdline(list(arguments))
         return shlex.join(arguments)
 
-    def _actor_command(self, module: str, project_id: str, timeout: float) -> str:
-        return self._command_text([sys.executable, "-m", module, "--root", str(self.root), "--project-id", project_id, "--timeout", str(timeout)])
+    def _actor_command(self, module: str, project_id: str, timeout: float, actor_backend: str = "codex-native") -> str:
+        identity_file = Path(__file__).with_name(module.rsplit(".", 1)[-1] + ".py")
+        return self._command_text([sys.executable, "-m", module, "--root", str(self.root), "--project-id", project_id, "--backend", self._actor_backend(actor_backend), "--identity-file", str(identity_file), "--timeout", str(timeout)])
 
     def _start_job(self, *, request_id: str, project_id: str, phase: str, command: list[str]) -> dict[str, Any]:
         _, project = self._project(project_id)
@@ -254,23 +263,24 @@ if __name__ == "__main__":
         job = self.state.create_job(project_id, phase, process.pid, stable_hash(command), json.dumps({"log": str(log_path.relative_to(self.root)), "result": str(marker.relative_to(self.root))}, sort_keys=True))
         return {"status": "running", "job": job}
 
-    def proof_start(self, *, request_id: str, project_id: str, timeout_seconds: float = 300) -> dict[str, Any]:
+    def proof_start(self, *, request_id: str, project_id: str, timeout_seconds: float = 300, actor_backend: str = "codex-native") -> dict[str, Any]:
         if timeout_seconds <= 0 or timeout_seconds > 3600:
             raise PluginError("timeout_seconds must be between 0 and 3600")
         _, project = self._project(project_id)
         if not (project / "workspace/conjectures.sqlite3").is_file():
             raise PluginError("discovery/conjecture workspace is required before proof")
-        payload = {"project_id": project_id, "timeout_seconds": timeout_seconds}
+        actor_backend = self._actor_backend(actor_backend)
+        payload = {"project_id": project_id, "timeout_seconds": timeout_seconds, "actor_backend": actor_backend}
         def start() -> dict[str, Any]:
             command = [sys.executable, "-m", "research_evolve.plugin.job_runner", "--phase", "proof", "--project", str(project),
                 "--timeout-seconds", str(timeout_seconds),
-                "--planner-command", self._actor_command("research_evolve.plugin.proof_planner_bridge", project_id, timeout_seconds),
-                "--prover-command", self._actor_command("research_evolve.plugin.prover_bridge", project_id, timeout_seconds),
-                "--reviewer-command", self._actor_command("research_evolve.plugin.proof_reviewer_bridge", project_id, timeout_seconds)]
+                "--planner-command", self._actor_command("research_evolve.plugin.proof_planner_bridge", project_id, timeout_seconds, actor_backend),
+                "--prover-command", self._actor_command("research_evolve.plugin.prover_bridge", project_id, timeout_seconds, actor_backend),
+                "--reviewer-command", self._actor_command("research_evolve.plugin.proof_reviewer_bridge", project_id, timeout_seconds, actor_backend)]
             return self._start_job(request_id=request_id, project_id=project_id, phase="proof", command=command)
         return self._idempotent(request_id, "proof_start", payload, start)
 
-    def formalize_start(self, *, request_id: str, project_id: str, mode: str, project_root: str, project_lock: str, premise_index: str, semantic_registry: str, build_targets: list[str] | None = None, timeout_seconds: float = 300) -> dict[str, Any]:
+    def formalize_start(self, *, request_id: str, project_id: str, mode: str, project_root: str, project_lock: str, premise_index: str, semantic_registry: str, build_targets: list[str] | None = None, timeout_seconds: float = 300, actor_backend: str = "codex-native") -> dict[str, Any]:
         if mode not in {"interactive", "whole"}:
             raise PluginError("mode must be interactive or whole")
         if timeout_seconds <= 0 or timeout_seconds > 3600:
@@ -280,11 +290,15 @@ if __name__ == "__main__":
         targets = build_targets or []
         if len(targets) > 20 or any(re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,127}", item) is None for item in targets):
             raise PluginError("build targets must be simple dotted identifiers")
-        payload = {"project_id": project_id, "mode": mode, "project_root": project_root, "project_lock": project_lock, "premise_index": premise_index, "semantic_registry": semantic_registry, "build_targets": targets, "timeout_seconds": timeout_seconds}
+        actor_backend = self._actor_backend(actor_backend)
+        payload = {"project_id": project_id, "mode": mode, "project_root": project_root, "project_lock": project_lock, "premise_index": premise_index, "semantic_registry": semantic_registry, "build_targets": targets, "timeout_seconds": timeout_seconds, "actor_backend": actor_backend}
         def start() -> dict[str, Any]:
             role = "tactic-generator" if mode == "interactive" else "formalizer"
-            actor = self._command_text([sys.executable, "-m", "research_evolve.plugin.actor_bridge", "--root", str(self.root), "--project-id", project_id, "--role", role, "--timeout", str(timeout_seconds)])
+            actor = self._command_text([sys.executable, "-m", "research_evolve.plugin.actor_bridge", "--root", str(self.root), "--project-id", project_id, "--role", role, "--timeout", str(timeout_seconds), "--backend", actor_backend])
             command = [sys.executable, "-m", "research_evolve.plugin.job_runner", "--phase", "formalize", "--project", str(project), "--formal-mode", mode, "--formal-actor-command", actor, "--project-root", str(frozen["project_root"]), "--project-lock", str(frozen["project_lock"]), "--premise-index", str(frozen["premise_index"]), "--semantic-registry", str(frozen["semantic_registry"])]
+            if mode == "whole":
+                repair = self._command_text([sys.executable, "-m", "research_evolve.plugin.actor_bridge", "--root", str(self.root), "--project-id", project_id, "--role", "formal-repairer", "--timeout", str(timeout_seconds), "--backend", actor_backend])
+                command.extend(["--formal-repair-command", repair])
             command.extend(["--timeout-seconds", str(timeout_seconds)])
             for target in targets:
                 command.extend(["--build-target", target])
@@ -446,8 +460,12 @@ if __name__ == "__main__":
             raise PluginError("actor request must be a JSON object smaller than 1 MB")
         if not isinstance(request.get("response_contract"), dict):
             raise PluginError("actor request requires a response_contract object")
-        payload = {"project_id": project_id, "role": role, "request": request}
-        return self._idempotent(request_id, "actor_task_create", payload, lambda: {"task": self.state.create_actor_task(project_id, role, request)})
+        try:
+            projected = project_actor_request(role, request, backend="manual")
+        except ValueError as exc:
+            raise PluginError(str(exc)) from exc
+        payload = {"project_id": project_id, "role": role, "request": projected}
+        return self._idempotent(request_id, "actor_task_create", payload, lambda: {"task": self.state.create_actor_task(project_id, role, projected)})
 
     def actor_task_get(self, *, task_id: str) -> dict[str, Any]:
         try:
@@ -461,9 +479,21 @@ if __name__ == "__main__":
             raise PluginError("invalid actor task status")
         return {"tasks": self.state.list_actor_tasks(project_id, status, self._limit(limit))}
 
+    def actor_policy_get(self, *, role: str) -> dict[str, Any]:
+        try:
+            return actor_policy(role)
+        except ValueError as exc:
+            raise PluginError(str(exc)) from exc
+
+    def actor_run_list(self, *, project_id: str, limit: int = 20) -> dict[str, Any]:
+        self._project(project_id)
+        return {"runs": self.state.list_actor_runs(project_id, self._limit(limit))}
+
     def actor_output_submit(self, *, request_id: str, task_id: str, expected_revision: int, response: dict[str, Any]) -> dict[str, Any]:
         try:
             task = self.state.get_actor_task(task_id)
+            if task["request"].get("actor_isolation", {}).get("backend", "manual") == "codex-native":
+                raise PluginError("Codex-native actor tasks accept output only from their isolated runner")
             if len(json.dumps(response, ensure_ascii=False).encode("utf-8")) > 1_000_000:
                 raise PluginError("actor response must be smaller than 1 MB")
             validate_actor_response(task["role"], response)
@@ -475,6 +505,12 @@ if __name__ == "__main__":
     def actor_task_reject(self, *, request_id: str, task_id: str, expected_revision: int, reason: str) -> dict[str, Any]:
         if not reason.strip() or len(reason) > 4000:
             raise PluginError("rejection reason must contain 1..4000 characters")
+        try:
+            task = self.state.get_actor_task(task_id)
+        except ValueError as exc:
+            raise PluginError(str(exc)) from exc
+        if task["request"].get("actor_isolation", {}).get("backend", "manual") == "codex-native":
+            raise PluginError("Codex-native actor tasks can be rejected only by their isolated runner")
         payload = {"task_id": task_id, "expected_revision": expected_revision, "reason": reason}
         return self._idempotent(request_id, "actor_task_reject", payload, lambda: {"task": self.state.update_actor_task(task_id, expected_revision, rejection_reason=reason.strip())})
 
@@ -514,9 +550,26 @@ if __name__ == "__main__":
             checks.append({"name": "workspace", "status": "pass", "detail": str(self.root)})
         except OSError as exc:
             checks.append({"name": "workspace", "status": "fail", "detail": str(exc)})
-        for command in ("lean", "lake"):
+        for command in ("codex", "lean", "lake"):
             executable = shutil.which(command)
-            checks.append({"name": command, "status": "pass" if executable else "warn", "detail": executable or "not found; only required for formalization"})
+            required_for = "Codex-native actors" if command == "codex" else "formalization"
+            status = "pass" if executable else "warn"
+            detail = executable or f"not found; only required for {required_for}"
+            if command == "codex" and executable:
+                try:
+                    probe = subprocess.run(
+                        [executable, "--version"], text=True, capture_output=True,
+                        timeout=5, check=False,
+                    )
+                    if probe.returncode != 0:
+                        status = "warn"
+                        detail = (probe.stderr or probe.stdout or f"exit={probe.returncode}")[-1000:]
+                    else:
+                        detail = (probe.stdout or executable).strip()
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    status = "warn"
+                    detail = f"found but not executable for native actors: {exc}"
+            checks.append({"name": command, "status": status, "detail": detail})
         if project_id:
             validation = self.project_validate(project_id=project_id)
             checks.append({"name": "project", "status": "pass" if not validation["errors"] else "fail", "detail": validation})

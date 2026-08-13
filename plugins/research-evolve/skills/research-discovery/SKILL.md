@@ -11,13 +11,13 @@ Run bounded discovery and distinguish observations from trusted empirical status
 
 1. Call `research_project_validate`; do not start a run with errors or a placeholder evaluator.
 2. Review the ResearchSpec budget, objectives, constraints, seeds, and enabled actors.
-3. Call `research_run_start` with a unique request id. Use `resume=true` only for the same recorded workspace.
+3. Call `research_run_start` with a unique request id and the default `actor_backend=codex-native`. Use `resume=true` only for the same recorded workspace.
 4. Poll `research_run_status` without starting a duplicate run. Use cancellation only when requested or necessary to stop unsafe resource use.
 5. Inspect typed data with `research_artifact_list`: candidates, observations, conjectures, counterexamples, and research-graph.
 6. State statuses exactly as stored. A plausible pattern is not `empirically_supported`; the deterministic counterexample/evidence gate decides that status.
 7. Report budget use, best evidence, counterexamples, failure diagnostics, and the next bounded experiment.
 
-## Actor Exchange
+## Actor Isolation
 
-Use `research_actor_task_create`, `research_actor_task_get`, and `research_actor_output_submit` only for supported roles. Preserve the supplied context and response contract. Reject a task explicitly if it requires hidden data or an unsupported claim.
+Explorer and Conjecturer each run in a fresh ephemeral Codex process with role-projected context, no MCP/plugins/web/subagents, an empty working directory, read-only sandboxing, and a required JSON output schema. Inspect `research_actor_run_list` when an actor fails. Use `actor_backend=manual` and the task exchange tools only as an explicit diagnostic fallback; never describe a manual task as process-isolated.
 

@@ -20,6 +20,7 @@ def main() -> int:
     parser.add_argument("--prover-command")
     parser.add_argument("--reviewer-command")
     parser.add_argument("--formal-actor-command")
+    parser.add_argument("--formal-repair-command")
     parser.add_argument("--formal-mode", choices=("interactive", "whole"))
     parser.add_argument("--project-root")
     parser.add_argument("--project-lock")
@@ -51,6 +52,8 @@ def main() -> int:
             parser.error("formalize requires an actor mode, frozen project, lock, index, and registry")
         actor_flag = "--tactic-generator-command" if args.formal_mode == "interactive" else "--formalizer-command"
         command = [sys.executable, "-m", "research_evolve.cli", "formalize", "--workspace", workspace, actor_flag, args.formal_actor_command, "--project-root", args.project_root, "--project-lock", args.project_lock, "--premise-index", args.premise_index, "--semantic-registry", args.semantic_registry, "--actor-timeout", str(args.timeout_seconds)]
+        if args.formal_mode == "whole" and args.formal_repair_command:
+            command.extend(["--repairer-command", args.formal_repair_command])
         for target in args.build_target or []:
             command.extend(["--project-build-target", target])
     try:
